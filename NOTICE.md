@@ -45,8 +45,9 @@ themselves stay under the OFL. The photographs were resized to 2560 px wide;
 CC0 places no conditions on this.
 
 Made for this project and covered by the GPL along with the code: the app
-icon (`assets/icon/`), all sounds (synthesised in `src/audio/synth.rs`) and
-the painted landscapes (generated in `src/scene.rs`).
+icon (`assets/icon/`, a watercolour by Anirudh Iyer), all sounds (synthesised
+in `src/audio/synth.rs`) and the painted landscapes (generated in
+`src/scene.rs`).
 
 ## Rust dependencies
 
