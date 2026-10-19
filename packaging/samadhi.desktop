@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Samādhi
+GenericName=Distraction-free writing
+Comment=Write in a calm, full-screen space with ambient sound
+Exec=samadhi %f
+Icon=samadhi
+Terminal=false
+Categories=Office;WordProcessor;TextEditor;
+Keywords=write;writing;focus;zen;ommwriter;omm;distraction-free;
+MimeType=text/plain;text/markdown;text/x-ommwriter;
+StartupWMClass=samadhi

@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "gradient", "url": "http://localhost:5173" },
+    { "name": "gradient-static", "url": "http://localhost:5174" }
+  ]
+}

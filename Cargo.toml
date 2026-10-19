@@ -1,0 +1,87 @@
+[package]
+name = "samadhi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Samādhi: a calm, distraction-free, full-screen writing app with ambient music and typing sounds"
+license = "GPL-3.0-only"
+authors = ["Anirudh Iyer"]
+readme = "README.md"
+repository = "https://github.com/anirudhi/samadhi"
+keywords = ["writing", "editor", "distraction-free", "ommwriter", "mindfulness"]
+categories = ["text-editors", "gui"]
+
+[dependencies]
+anyhow = "1.0.104"
+directories = "6.0.0"
+eframe = { version = "0.37.0", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+encoding_rs = "0.8.42"
+env_logger = "0.11.11"
+
+image = { version = "0.25.10", default-features = false, features = [
+    "bmp",
+    "gif",
+    "jpeg",
+    "png",
+    "pnm",
+    "tiff",
+    "webp",
+] }
+log = "0.4.34"
+resvg = { version = "0.48.1", default-features = false }
+rfd = "0.17.2"
+rodio = { version = "0.23.0", default-features = false, features = [
+    "playback",
+    "flac",
+    "mp3",
+    "vorbis",
+    "wav",
+] }
+serde = { version = "1.0.229", features = ["derive"] }
+spellbook = "0.4.2"
+tempfile = "3.27.0"
+toml = "1.1.8"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pixel/sample maths casts are pervasive and intentional in a GUI + DSP app.
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+missing_panics_doc = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Scene painting, audio synthesis and image decoding are number crunching:
+# keep them quick in debug builds too.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["eframe", "wgpu", "snapshot"] }
