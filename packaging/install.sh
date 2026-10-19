@@ -16,7 +16,8 @@ for dir in "$root"/assets/icon/hicolor/*/; do
     size=$(basename "$dir")
     install -Dm644 "$dir/apps/samadhi.png" "$data/icons/hicolor/$size/apps/samadhi.png"
 done
-install -Dm644 "$root/assets/icon/samadhi.svg" "$data/icons/hicolor/scalable/apps/samadhi.svg"
+# Remove the earlier vector icon, which would otherwise take precedence.
+rm -f "$data/icons/hicolor/scalable/apps/samadhi.svg"
 # Point the launcher at the icon file directly: some launchers (e.g. COSMIC)
 # do not search a per-user icon theme that lacks its own index.theme.
 install -d "$data/applications"

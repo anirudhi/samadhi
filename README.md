@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/icon/samadhi.svg" width="96" alt=""></p>
+<p align="center"><img src="assets/icon/samadhi.png" width="112" alt=""></p>
 
 # Samādhi
 
@@ -129,7 +129,7 @@ hand:
 cargo test                                   # unit and headless UI tests
 cargo clippy --all-targets -- -D warnings    # pedantic lints are enabled
 cargo test -- --ignored render_previews      # writes UI and theme renders to target/previews/
-cargo run --example render_icons             # re-renders the PNG icons from the SVG
+cargo run --release --example render_icons   # re-renders the icon sizes from assets/icon/samadhi.png
 cargo run --release --example prepare_photos -- <dir>  # resizes source photos into assets/photos/
 cargo run --release --example time_scenes    # how long each theme takes to paint
 ```
