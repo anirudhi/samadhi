@@ -4,9 +4,9 @@
 
 *Samādhi* (Pali): concentration, one-pointed attention.
 
-A calm, distraction-free, full-screen writing app for Linux, in the spirit of
-OmmWriter. You get one page, a living landscape behind it, ambient music and
-soft typing sounds. The interface fades away the moment you start typing and
+A calm, distraction-free, full-screen writing app for Linux, heavily inspired
+by [OmmWriter](https://ommwriter.com). You get one page, a living landscape
+behind it, ambient music and soft typing sounds. The interface fades away the moment you start typing and
 comes back when you move the mouse.
 
 New writing starts as a draft. Save it once to give it a name, and from then
@@ -152,6 +152,13 @@ Layout of `src/`:
 Samādhi is free software, released under the GNU General Public License,
 version 3 (see [`LICENSE`](LICENSE)). Copyright © 2026 Anirudh Iyer and the
 Samādhi contributors.
+
+Samādhi is heavily inspired by [OmmWriter](https://ommwriter.com), whose
+calm, immersive approach to writing (soft backgrounds, ambient sound and
+gentle typing sounds) it follows closely. It is an independent open-source
+project, not affiliated with or endorsed by OmmWriter or its makers.
+"OmmWriter" is used here only to describe that inspiration and the `.omm`
+file format Samādhi can open.
 
 It began as a Rust port of KoalaWriter (© 2010 Alessio Mazzarelli, GPLv3), a
 Qt4 OmmWriter clone, and has since been rewritten and extended.

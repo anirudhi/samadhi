@@ -11,6 +11,14 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 or FITNESS FOR A PARTICULAR PURPOSE. See [`LICENSE`](LICENSE) for the full
 text.
 
+### Inspiration
+
+Samādhi is heavily inspired by OmmWriter (<https://ommwriter.com>). It is an
+independent project, not affiliated with or endorsed by OmmWriter or its
+makers, and contains none of OmmWriter's code, images or sounds. The name is
+used only to describe that inspiration and compatibility with OmmWriter's
+`.omm` documents.
+
 ### Original work
 
 Samādhi began as a port to Rust of **KoalaWriter** 1.0, Copyright (C) 2010
