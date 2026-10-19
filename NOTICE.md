@@ -16,8 +16,7 @@ text.
 Samādhi is heavily inspired by OmmWriter (<https://ommwriter.com>). It is an
 independent project, not affiliated with or endorsed by OmmWriter or its
 makers, and contains none of OmmWriter's code, images or sounds. The name is
-used only to describe that inspiration and compatibility with OmmWriter's
-`.omm` documents.
+used only to describe that inspiration.
 
 ### Original work
 

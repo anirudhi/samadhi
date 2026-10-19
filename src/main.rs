@@ -10,9 +10,9 @@ use samadhi::{APP_ID, APP_NAME};
 const USAGE: &str = "\
 Usage: samadhi [OPTIONS] [FILE]
 
-A calm, distraction-free, full-screen writing app. Opens FILE, or else any
-unsaved draft left by a crash, or else the last document you saved. FILE may be any plain-text document, including
-OmmWriter .omm files.
+A calm, distraction-free, full-screen writing app. Opens FILE (any
+plain-text or Markdown document), or else any unsaved draft left by a crash,
+or else the last document you saved.
 
 Options:
   -h, --help     Show this help

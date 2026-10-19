@@ -534,8 +534,7 @@ impl SamadhiApp {
             .or_else(|| std::fs::create_dir_all(&documents).ok().map(|()| documents))
             .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()));
         let mut dialog = rfd::FileDialog::new()
-            .add_filter("Text documents", document::TEXT_EXTENSIONS)
-            .add_filter("OmmWriter documents", &["omm"])
+            .add_filter("Markdown and text", document::TEXT_EXTENSIONS)
             .add_filter("All files", &["*"]);
         if let Some(dir) = dir {
             dialog = dialog.set_directory(dir);
@@ -1583,7 +1582,7 @@ impl eframe::App for SamadhiApp {
 }
 
 /// A file name for a new document, taken from its first line (as most
-/// writing apps do), e.g. `# A quiet place` → `A quiet place.omm`.
+/// writing apps do), e.g. `# A quiet place` → `A quiet place.md`.
 fn suggested_file_name(text: &str, extension: &str) -> String {
     let first = text
         .lines()
@@ -1769,7 +1768,7 @@ mod ui_tests {
     #[test]
     fn saved_files_autosave_and_reopen_next_time() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("story.omm");
+        let path = dir.path().join("story.md");
         std::fs::write(&path, "Once").unwrap();
         let options = options(dir.path(), Some(path.clone()));
         let mut h = Harness::builder()
@@ -1792,16 +1791,16 @@ mod ui_tests {
     #[test]
     fn suggested_names_come_from_the_first_line() {
         assert_eq!(
-            suggested_file_name("# A quiet place\nmore", "omm"),
-            "A quiet place.omm"
+            suggested_file_name("# A quiet place\nmore", "md"),
+            "A quiet place.md"
         );
         assert_eq!(
             suggested_file_name("\n\n  Notes: on/off?  ", "txt"),
             "Notes onoff.txt"
         );
-        assert_eq!(suggested_file_name("", "omm"), "Untitled.omm");
+        assert_eq!(suggested_file_name("", "md"), "Untitled.md");
         let long = "word ".repeat(30);
-        assert!(suggested_file_name(&long, "omm").chars().count() <= 64);
+        assert!(suggested_file_name(&long, "md").chars().count() <= 64);
     }
 
     #[test]
@@ -1904,9 +1903,9 @@ mod ui_tests {
     }
 
     #[test]
-    fn opens_omm_files_passed_on_start_up() {
+    fn opens_files_passed_on_start_up() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("story.omm");
+        let path = dir.path().join("story.md");
         std::fs::write(&path, "one two three").unwrap();
         let options = options(dir.path(), Some(path));
         let mut h = Harness::builder()
@@ -1962,7 +1961,7 @@ mod ui_tests {
     #[ignore = "needs a GPU; writes preview images for manual review"]
     fn render_previews() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("story.omm");
+        let path = dir.path().join("story.md");
         std::fs::write(
             &path,
             "# Writing in a quiet place\n\nThe breath is **slow**; the wrods arrive *softly*, one after another.\n\n> Attention is the beginning of devotion.\n\n- notice\n- breathe\n- write",

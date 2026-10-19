@@ -2,8 +2,7 @@
 //! ambient music, key-click sounds and soothing backgrounds.
 //!
 //! Samādhi (Pali: concentration, one-pointed attention) gives the page your
-//! whole focus. Documents are plain text, and OmmWriter
-//! `.omm` files are read and written natively.
+//! whole focus. Documents are plain text, saved as Markdown by default.
 
 pub mod app;
 pub mod audio;

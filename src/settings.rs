@@ -50,7 +50,7 @@ pub struct Settings {
     pub last_file: Option<PathBuf>,
     /// Where new documents are created (default `~/Documents/Samādhi`).
     pub documents_dir: Option<PathBuf>,
-    /// Extension for new documents (`omm` or `txt`).
+    /// Extension for new documents (`md` by default).
     pub default_extension: String,
 }
 
@@ -73,7 +73,7 @@ impl Default for Settings {
             spell_check: false,
             last_file: None,
             documents_dir: None,
-            default_extension: "omm".to_owned(),
+            default_extension: "md".to_owned(),
         }
     }
 }
@@ -144,7 +144,7 @@ impl Settings {
             .trim_start_matches('.')
             .to_ascii_lowercase();
         if self.default_extension.is_empty() {
-            "omm".clone_into(&mut self.default_extension);
+            "md".clone_into(&mut self.default_extension);
         }
         if let Some(p) = self.page {
             let ok = [p.x, p.y, p.width, p.height].iter().all(|v| v.is_finite());
@@ -189,7 +189,7 @@ mod tests {
         fs::write(&path, "font_size = 30.0\n").unwrap();
         let s = Settings::load_or_default(Some(&path));
         assert!((s.font_size - 30.0).abs() < f32::EPSILON);
-        assert_eq!(s.default_extension, "omm");
+        assert_eq!(s.default_extension, "md");
 
         fs::write(&path, "this is = = not toml").unwrap();
         assert_eq!(Settings::load_or_default(Some(&path)), Settings::default());

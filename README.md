@@ -12,8 +12,8 @@ comes back when you move the mouse.
 New writing starts as a draft. Save it once to give it a name, and from then
 on it saves itself a moment after you stop typing. Unsaved drafts survive
 crashes and power cuts, and Samādhi reopens where you left off. Documents
-are plain text, with optional live markdown styling. OmmWriter `.omm` files
-open and save natively.
+are plain text, saved as Markdown (`.md`) by default, with optional live
+markdown styling.
 
 ## Features
 
@@ -69,9 +69,9 @@ open and save natively.
   text makes busy backgrounds easier to read.
 - **Safe saving:**
   - Saves are atomic: a crash can never leave a half-written file.
-  - The original encoding (UTF-8 with or without BOM, UTF-16, legacy
-    Windows-1252) and line endings are preserved, so files round-trip back
-    to OmmWriter unchanged.
+  - Files you open keep their original encoding (UTF-8 with or without BOM,
+    UTF-16, legacy Windows-1252) and line endings, so text written elsewhere
+    round-trips unchanged.
 
 ## Install
 
@@ -87,10 +87,9 @@ only, with no root needed:
 
 - the binary at `~/.local/bin/samadhi`
 - the icons and the launcher
-- an `.omm` file type, so you can double-click OmmWriter documents
 
 You can also run it straight from the source tree with
-`cargo run --release -- [file.omm]`.
+`cargo run --release -- [file.md]`.
 
 ## Use
 
@@ -122,7 +121,7 @@ Settings live in `~/.config/samadhi/settings.toml`, which you can edit by
 hand:
 
 - `documents_dir` changes the folder the save dialog starts in.
-- `default_extension` chooses between `.omm` and `.txt` for new documents.
+- `default_extension` sets the extension for new documents (`md` by default).
 
 ## Development
 
@@ -142,7 +141,7 @@ Layout of `src/`:
 | `app` | UI and input |
 | `stage` | Parallax, particles and vignette |
 | `scene` | Procedural landscapes |
-| `document` | Text and `.omm` I/O |
+| `document` | Plain-text and Markdown files |
 | `markdown` | Live markdown styling |
 | `audio` | Playback and sound synthesis |
 | `settings`, `page`, `fonts`, `theme`, `icons`, `widgets` | Supporting pieces |
@@ -157,8 +156,7 @@ Samādhi is heavily inspired by [OmmWriter](https://ommwriter.com), whose
 calm, immersive approach to writing (soft backgrounds, ambient sound and
 gentle typing sounds) it follows closely. It is an independent open-source
 project, not affiliated with or endorsed by OmmWriter or its makers.
-"OmmWriter" is used here only to describe that inspiration and the `.omm`
-file format Samādhi can open.
+"OmmWriter" is used here only to describe that inspiration.
 
 It began as a Rust port of KoalaWriter (© 2010 Alessio Mazzarelli, GPLv3), a
 Qt4 OmmWriter clone, and has since been rewritten and extended.

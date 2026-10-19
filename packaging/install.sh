@@ -2,7 +2,7 @@
 # Builds Samādhi and installs it for the current user (no root needed):
 #   binary  -> ~/.local/bin/samadhi
 #   icons   -> ~/.local/share/icons/hicolor/<size>/apps/samadhi.png
-#   launcher and the .omm file type -> ~/.local/share/{applications,mime}
+#   launcher -> ~/.local/share/applications
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -22,15 +22,13 @@ install -Dm644 "$root/assets/icon/samadhi.svg" "$data/icons/hicolor/scalable/app
 install -d "$data/applications"
 sed "s|^Icon=.*|Icon=$data/icons/hicolor/256x256/apps/samadhi.png|" \
     "$root/packaging/samadhi.desktop" > "$data/applications/samadhi.desktop"
-install -Dm644 "$root/packaging/samadhi-omm.xml" "$data/mime/packages/samadhi-omm.xml"
 
 # Refresh caches when the tools are available; harmless if they are not.
-update-mime-database "$data/mime" 2>/dev/null || true
 update-desktop-database "$data/applications" 2>/dev/null || true
 # A cache in the per-user theme would shadow icons it does not list.
 rm -f "$data/icons/hicolor/icon-theme.cache"
 
-echo "Installed. Launch Samādhi from your app menu, or run: samadhi [file.omm]"
+echo "Installed. Launch Samādhi from your app menu, or run: samadhi [file.md]"
 case ":$PATH:" in
     *":$bin:"*) ;;
     *) echo "Note: $bin is not on your PATH." ;;

@@ -86,7 +86,7 @@ mod tests {
             })
         );
 
-        let file = dir.path().join("story.omm");
+        let file = dir.path().join("story.md");
         r.store("edited", Some(&file)).unwrap();
         assert_eq!(r.load().unwrap().path, Some(file));
 

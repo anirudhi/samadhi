@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
-  <mime-type type="text/x-ommwriter">
-    <sub-class-of type="text/plain"/>
-    <comment>OmmWriter document</comment>
-    <glob pattern="*.omm"/>
-  </mime-type>
-</mime-info>

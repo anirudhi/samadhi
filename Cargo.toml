@@ -8,7 +8,7 @@ license = "GPL-3.0-only"
 authors = ["Anirudh Iyer"]
 readme = "README.md"
 repository = "https://github.com/anirudhi/samadhi"
-keywords = ["writing", "editor", "distraction-free", "ommwriter", "mindfulness"]
+keywords = ["writing", "editor", "distraction-free", "markdown", "mindfulness"]
 categories = ["text-editors", "gui"]
 
 [dependencies]

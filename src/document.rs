@@ -1,11 +1,10 @@
-//! Reading and writing plain-text documents, including OmmWriter `.omm`
-//! files.
+//! Reading and writing plain-text and Markdown documents.
 //!
-//! An `.omm` file is plain text with a different extension. Files written on
-//! Windows may be UTF-16 or in the legacy Windows-1252 code page, and may use
-//! CRLF line endings, so the original encoding, byte-order mark and line
-//! ending style are detected on load and restored on save. That way a
-//! document round-trips back to OmmWriter unchanged.
+//! Any plain-text file can be opened, whatever its extension. Files written
+//! by other apps, especially on Windows, may be UTF-16 or in the legacy
+//! Windows-1252 code page, and may use CRLF line endings, so the original
+//! encoding, byte-order mark and line ending style are detected on load and
+//! restored on save. That way a document round-trips unchanged.
 
 use std::fs;
 use std::io::Write as _;
@@ -14,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, bail};
 
 /// File extensions offered in the open/save dialogs.
-pub const TEXT_EXTENSIONS: &[&str] = &["omm", "txt", "md", "text"];
+pub const TEXT_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "text"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextEncoding {
@@ -311,7 +310,7 @@ mod tests {
     #[test]
     fn saving_into_a_new_folder_creates_it() {
         let dir = tempfile::tempdir().unwrap();
-        let nested = dir.path().join("a/b/Draft.omm");
+        let nested = dir.path().join("a/b/Draft.md");
         let mut doc = Document {
             text: "hi".into(),
             ..Document::default()
@@ -321,41 +320,41 @@ mod tests {
     }
 
     #[test]
-    fn plain_utf8_omm_round_trips_byte_for_byte() {
+    fn plain_utf8_round_trips_byte_for_byte() {
         let bytes = "Once upon a time…\nthe end.\n".as_bytes();
-        let (doc, written) = round_trip(bytes, "story.omm");
+        let (doc, written) = round_trip(bytes, "story.md");
         assert_eq!(doc.text, "Once upon a time…\nthe end.\n");
         assert_eq!(written, bytes);
-        assert_eq!(doc.display_name(), "story.omm");
+        assert_eq!(doc.display_name(), "story.md");
     }
 
     #[test]
     fn utf8_bom_and_crlf_are_preserved() {
         let bytes = b"\xEF\xBB\xBFline one\r\nline two\r\n";
-        let (doc, written) = round_trip(bytes, "win.omm");
+        let (doc, written) = round_trip(bytes, "win.md");
         assert_eq!(doc.text, "line one\nline two\n");
         assert_eq!(written, bytes);
     }
 
     #[test]
     fn utf16_with_and_without_bom_round_trips() {
-        let text = "Grüße\r\nfrom OmmWriter";
+        let text = "Grüße\r\nfrom afar";
         let mut le_bom = vec![0xFF, 0xFE];
         le_bom.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
-        let (doc, written) = round_trip(&le_bom, "a.omm");
-        assert_eq!(doc.text, "Grüße\nfrom OmmWriter");
+        let (doc, written) = round_trip(&le_bom, "a.md");
+        assert_eq!(doc.text, "Grüße\nfrom afar");
         assert_eq!(written, le_bom);
 
         let be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
-        let (doc, written) = round_trip(&be, "b.omm");
-        assert_eq!(doc.text, "Grüße\nfrom OmmWriter");
+        let (doc, written) = round_trip(&be, "b.md");
+        assert_eq!(doc.text, "Grüße\nfrom afar");
         assert_eq!(written, be);
     }
 
     #[test]
     fn legacy_windows_1252_round_trips() {
         let bytes = b"caf\xe9 \x93quoted\x94";
-        let (doc, written) = round_trip(bytes, "old.omm");
+        let (doc, written) = round_trip(bytes, "old.md");
         assert_eq!(doc.text, "café \u{201c}quoted\u{201d}");
         assert_eq!(written, bytes);
     }
@@ -363,7 +362,7 @@ mod tests {
     #[test]
     fn unmappable_text_in_legacy_file_falls_back_to_utf8() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("old.omm");
+        let path = dir.path().join("old.md");
         fs::write(&path, b"caf\xe9").unwrap();
         let mut doc = Document::open(&path).unwrap();
         doc.text.push_str(" 日本");
@@ -374,7 +373,7 @@ mod tests {
     #[test]
     fn binary_files_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("image.omm");
+        let path = dir.path().join("image.md");
         fs::write(&path, [0x89, b'P', b'N', b'G', 0, 0, 0, 13, 1, 2, 3]).unwrap();
         assert!(Document::open(&path).is_err());
     }
@@ -388,7 +387,7 @@ mod tests {
         };
         doc.mark_dirty();
         assert!(doc.save().is_err());
-        let path = dir.path().join("new.omm");
+        let path = dir.path().join("new.md");
         doc.save_as(&path).unwrap();
         assert!(!doc.is_dirty());
         assert_eq!(doc.path(), Some(path.as_path()));
