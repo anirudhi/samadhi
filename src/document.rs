@@ -106,7 +106,7 @@ impl Document {
     }
 
     pub fn word_count(&self) -> usize {
-        self.text.split_whitespace().count()
+        count_words(&self.text)
     }
 
     /// Saves to the current path. Fails if the document has never been saved.
@@ -136,6 +136,15 @@ impl Document {
         self.dirty = false;
         Ok(outcome)
     }
+}
+
+/// Words in `text`: runs of non-whitespace containing a letter or digit, so
+/// markdown symbols (`#`, `>`, `-` bullets, `---`) and stray punctuation
+/// are not counted.
+pub fn count_words(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .count()
 }
 
 /// Writes `bytes` to a temporary file next to `path`, syncs it and renames it
@@ -417,6 +426,14 @@ mod tests {
         assert_eq!(
             normalize_line_endings("a\nb"),
             ("a\nb".into(), LineEnding::Lf)
+        );
+    }
+
+    #[test]
+    fn markdown_symbols_are_not_words() {
+        assert_eq!(
+            count_words("# Title\n\n> quote here\n\n- one\n- two\n\n---\n**bold** — end"),
+            7
         );
     }
 

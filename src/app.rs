@@ -994,7 +994,7 @@ impl SamadhiApp {
             accent: theme::palette(self.stage.dark()).accent,
         };
         let enabled = self.settings.markdown;
-        let editor_id = Id::unique("page-text");
+        let editor_id = editor_id();
         let active = Self::cursor_line(ui.ctx(), editor_id, &self.doc.text);
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
             let mut job = markdown::layout(text.as_str(), &look, enabled, active.as_ref());
@@ -1411,16 +1411,26 @@ impl SamadhiApp {
     }
 
     /// Word count, centred under the page.
+    /// Word count, centred under the page, with the selection's count
+    /// beside it while text is highlighted. It fades with the interface,
+    /// but stays visible while something is selected.
     fn word_count(&self, ctx: &egui::Context, page: Rect, fade: f32) {
-        let words = self.doc.word_count();
-        let text = format!("{words} {}", if words == 1 { "word" } else { "words" });
+        let selected = selection(ctx, &self.doc.text)
+            .map(|range| document::count_words(&self.doc.text[range]));
+        let show_selection =
+            ctx.animate_bool_with_time(Id::unique("selection-count"), selected.is_some(), FADE_IN);
+        let opacity = fade.max(show_selection);
+        if opacity <= 0.0 {
+            return;
+        }
+        let text = word_count_label(self.doc.word_count(), selected);
         egui::Area::new(Id::unique("word-count"))
             .order(egui::Order::Middle)
             .interactable(false)
             .fixed_pos(pos2(page.center().x, page.bottom() + 14.0))
             .pivot(Align2::CENTER_TOP)
             .show(ctx, |ui| {
-                ui.multiply_opacity(fade);
+                ui.multiply_opacity(opacity);
                 caption(ui, &text, 12.5, self.stage.ink().gamma_multiply(0.6), 0.4);
             });
     }
@@ -1542,10 +1552,10 @@ impl eframe::App for SamadhiApp {
         if fade > 0.0 {
             self.dock(&ctx, screen, page, fade);
             self.maybe_close_flyout(&ctx);
-            self.word_count(&ctx, page, fade);
         } else {
             self.menu_area = None;
         }
+        self.word_count(&ctx, page, fade);
         ctx.set_cursor_icon(if self.ui_visible {
             cursor
         } else {
@@ -1607,6 +1617,29 @@ fn suggested_file_name(text: &str, extension: &str) -> String {
     let name = name.trim_end_matches(['.', ',', ';', ' ']);
     let stem = if name.is_empty() { "Untitled" } else { name };
     format!("{stem}.{extension}")
+}
+
+/// The id of the writing area.
+fn editor_id() -> Id {
+    Id::unique("page-text")
+}
+
+/// The byte range of the text highlighted in the editor, if any.
+fn selection(ctx: &egui::Context, text: &str) -> Option<Range<usize>> {
+    let range = egui::TextEdit::load_state(ctx, editor_id())?
+        .cursor
+        .char_range()?;
+    let (a, b) = (range.primary.index.0, range.secondary.index.0);
+    (a != b).then(|| byte_of_char(text, a.min(b))..byte_of_char(text, a.max(b)))
+}
+
+/// "340 words", or "340 words · 12 selected" while text is highlighted.
+fn word_count_label(total: usize, selected: Option<usize>) -> String {
+    let total = format!("{total} {}", if total == 1 { "word" } else { "words" });
+    match selected {
+        Some(n) => format!("{total} \u{00b7} {n} selected"),
+        None => total,
+    }
 }
 
 fn byte_of_char(text: &str, chars: usize) -> usize {
@@ -1786,6 +1819,28 @@ mod ui_tests {
 
         let h = harness(dir.path());
         assert_eq!(h.state().doc.path(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn word_count_shows_the_selection_beside_the_total() {
+        assert_eq!(word_count_label(340, None), "340 words");
+        assert_eq!(word_count_label(1, None), "1 word");
+        assert_eq!(
+            word_count_label(340, Some(12)),
+            "340 words \u{00b7} 12 selected"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        h.get_by_role(egui::Role::MultilineTextInput)
+            .type_text("one two three four");
+        h.run_steps(2);
+        assert_eq!(selection(&h.ctx, &h.state().doc.text), None);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run_steps(2);
+        let text = h.state().doc.text.clone();
+        let range = selection(&h.ctx, &text).expect("text is selected");
+        assert_eq!(document::count_words(&text[range]), 4);
     }
 
     #[test]
@@ -1985,6 +2040,13 @@ mod ui_tests {
                 .unwrap();
         };
         save(&mut h, "ui-1-idle");
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.run_steps(20);
+        save(&mut h, "ui-1b-selection");
+        h.key_press(Key::ArrowRight);
+        // Move the mouse (somewhere new) to bring the faded interface back.
+        h.hover_at(pos2(60.0, 60.0));
+        h.run_steps(10);
         // Let the theme previews finish so the grid is fully drawn.
         h.get_by_role_and_label(egui::Role::Button, "Theme").hover();
         for _ in 0..600 {
