@@ -4,6 +4,7 @@
 //! working silently instead of failing to start.
 
 pub mod synth;
+pub mod tracks;
 
 use std::fs::File;
 use std::io::BufReader;
@@ -18,7 +19,28 @@ use rodio::{ChannelCount, Decoder, MixerDeviceSink, Player, SampleRate, Source};
 use crate::catalog;
 pub use synth::{BuiltinClick, BuiltinMusic};
 
-pub type MusicSource = catalog::Source<BuiltinMusic>;
+/// Built-in music: a generated soundscape or a bundled track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Music {
+    Soundscape(BuiltinMusic),
+    Track(usize),
+}
+
+/// Every built-in piece of music, soundscapes first, with display names.
+pub fn builtin_music() -> Vec<(String, Music)> {
+    BuiltinMusic::ALL
+        .iter()
+        .map(|&(name, m)| (name.to_owned(), Music::Soundscape(m)))
+        .chain(
+            tracks::TRACKS
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (t.name.to_owned(), Music::Track(i))),
+        )
+        .collect()
+}
+
+pub type MusicSource = catalog::Source<Music>;
 pub type ClickSource = catalog::Source<BuiltinClick>;
 
 /// Audio file extensions accepted for music and clicks.
@@ -140,7 +162,13 @@ impl AudioEngine {
         };
         let player = Player::connect_new(device.mixer());
         match source {
-            catalog::Source::Builtin(kind) => player.append(kind.source()),
+            catalog::Source::Builtin(Music::Soundscape(kind)) => player.append(kind.source()),
+            catalog::Source::Builtin(Music::Track(i)) => {
+                let track = &tracks::TRACKS[*i];
+                let looped = Decoder::new_looped(std::io::Cursor::new(track.bytes))
+                    .with_context(|| format!("decoding {}", track.name))?;
+                player.append(looped.fade_in(MUSIC_FADE_IN));
+            }
             catalog::Source::File(path) => {
                 let file =
                     File::open(path).with_context(|| format!("opening {}", path.display()))?;

@@ -52,6 +52,9 @@ fn main() -> ExitCode {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    samadhi::desktop::ensure_launcher();
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_NAME)
         // On Wayland the compositor finds the icon through the app id and

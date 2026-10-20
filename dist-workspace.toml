@@ -1,0 +1,27 @@
+[workspace]
+members = ["cargo:."]
+
+# Release settings for `dist` (https://github.com/axodotdev/cargo-dist).
+# Pushing a tag like `v0.2.0` builds the app for every target below and
+# publishes a GitHub Release with installers and a Homebrew formula.
+[dist]
+cargo-dist-version = "0.33.0"
+ci = "github"
+installers = ["shell", "homebrew"]
+tap = "anirudhi/homebrew-tap"
+publish-jobs = ["homebrew"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+install-path = "~/.local/bin"
+install-updater = true
+formula = "samadhi"
+# Ship the licence notices with every download.
+include = ["NOTICE.md"]
+
+# The Linux builds need ALSA's headers for audio.
+[dist.dependencies.apt]
+libasound2-dev = "*"

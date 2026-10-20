@@ -15,7 +15,7 @@ use eframe::egui::{
     UiBuilder, Vec2, pos2, vec2,
 };
 
-use crate::audio::{self, AudioEngine, BuiltinClick, BuiltinMusic};
+use crate::audio::{self, AudioEngine, BuiltinClick, Music};
 use crate::background::{self, SceneLoader};
 use crate::catalog::{self, Catalog};
 use crate::document::{self, Document, SaveOutcome};
@@ -142,7 +142,7 @@ pub struct SamadhiApp {
 
     audio: AudioEngine,
     themes: Catalog<ThemeKind>,
-    music: Catalog<BuiltinMusic>,
+    music: Catalog<Music>,
     clicks: Catalog<BuiltinClick>,
     stage: Stage,
     scene_loader: SceneLoader,
@@ -211,7 +211,7 @@ impl SamadhiApp {
             scan("backgrounds", background::IMAGE_EXTENSIONS),
         );
         let music = Catalog::new(
-            named(&BuiltinMusic::ALL),
+            audio::builtin_music(),
             scan("music", audio::AUDIO_EXTENSIONS),
         );
         let clicks = Catalog::new(

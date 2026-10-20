@@ -1,0 +1,18 @@
+# Changelog
+
+All notable changes to Samādhi are recorded here. Each release's section
+becomes its notes on GitHub.
+
+## 0.1.0
+
+The first release.
+
+- Full-screen, distraction-free writing with a page you can move and resize.
+- Sixteen themes: eight landscape photographs and eight painted scenes, with
+  gentle parallax, ambient motion and a vignette that deepens as you write.
+- Five bundled music tracks and three generated soundscapes; nine subtle
+  typing sounds.
+- Live markdown styling and spell check (both optional).
+- Drafts until the first save, then autosave; unsaved work survives crashes.
+- Word count, including the words in the current selection.
+- Curated fonts: Literata, Newsreader, Inter, iA Writer Quattro and Mono.

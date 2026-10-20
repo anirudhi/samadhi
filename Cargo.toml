@@ -8,6 +8,7 @@ license = "GPL-3.0-only"
 authors = ["Anirudh Iyer"]
 readme = "README.md"
 repository = "https://github.com/anirudhi/samadhi"
+homepage = "https://github.com/anirudhi/samadhi"
 keywords = ["writing", "editor", "distraction-free", "markdown", "mindfulness"]
 categories = ["text-editors", "gui"]
 
@@ -69,6 +70,10 @@ missing_panics_doc = "allow"
 many_single_char_names = "allow"
 doc_markdown = "allow"
 too_many_lines = "allow"
+
+# The profile `dist` builds releases with.
+[profile.dist]
+inherits = "release"
 
 [profile.release]
 lto = "thin"

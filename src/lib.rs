@@ -8,6 +8,8 @@ pub mod app;
 pub mod audio;
 pub mod background;
 pub mod catalog;
+#[cfg(target_os = "linux")]
+pub mod desktop;
 pub mod document;
 pub mod fonts;
 pub mod icons;

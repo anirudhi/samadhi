@@ -51,13 +51,14 @@ markdown styling.
     dust motes.
 
   *Reduce motion* turns all of it off.
-- **Sound.** Endless generated soundscapes (an ambient pad, gentle rain,
-  ocean swell, and a coffee shop with distant chatter, cups and the odd
-  espresso machine), levelled to the same loudness, with mute and volume
-  controls. There are nine key sounds,
-  from barely-there (Felt, Whisper, Pencil, Raindrop, Wood tap) to classic
-  (Soft tick, Typewriter, Bamboo, Droplet). Each keystroke varies slightly,
-  so fast typing sounds natural.
+- **Sound:**
+  - Five calm music tracks.
+  - Three endless generated soundscapes (an ambient pad, gentle rain, ocean
+    swell), levelled to the same loudness.
+  - Nine key sounds, from barely-there (Felt, Whisper, Pencil, Raindrop,
+    Wood tap) to classic (Soft tick, Typewriter, Bamboo, Droplet). Each
+    keystroke varies slightly, so fast typing sounds natural.
+  - Mute and volume controls.
 - **Typography.** A few curated, bundled faces:
   - Literata (default), Newsreader and Inter (Sans), set Light, with true
     bold.
@@ -75,21 +76,43 @@ markdown styling.
 
 ## Install
 
-You need a Rust toolchain (1.95 or newer) and the ALSA development headers:
+**macOS (Homebrew):**
+
+```sh
+brew install anirudhi/tap/samadhi
+```
+
+**Linux and macOS (installer script):**
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.sh | sh
+```
+
+This puts `samadhi` in `~/.local/bin`, with no root needed. On Linux,
+Samādhi adds itself to your application menu, with its icon, the first time
+you run it.
+
+You can also download a build for your system from the
+[releases page](https://github.com/anirudhi/samadhi/releases).
+
+### Updating
+
+- **Homebrew:** `brew upgrade samadhi`
+- **Installer script:** run `samadhi-update`, or run the installer again.
+
+### Building from source
+
+You need a Rust toolchain (1.95 or newer), plus the ALSA development
+headers on Linux:
 
 ```sh
 sudo apt install libasound2-dev        # Debian, Ubuntu, Pop!_OS
 ./packaging/install.sh
 ```
 
-The script builds a release binary and installs everything for your user
-only, with no root needed:
-
-- the binary at `~/.local/bin/samadhi`
-- the icons and the launcher
-
-You can also run it straight from the source tree with
-`cargo run --release -- [file.md]`.
+The script builds a release binary and installs it, with the launcher
+and icons, for your user only. You can also run it straight from the source
+tree with `cargo run --release -- [file.md]`.
 
 ## Use
 
@@ -146,6 +169,29 @@ Layout of `src/`:
 | `audio` | Playback and sound synthesis |
 | `settings`, `page`, `fonts`, `theme`, `icons`, `widgets` | Supporting pieces |
 
+## Releasing a new version
+
+Releases are built and published by GitHub Actions using
+[dist](https://github.com/axodotdev/cargo-dist):
+
+1. Bump `version` in `Cargo.toml` and add a section for it at the top of
+   `CHANGELOG.md`; that section becomes the release notes.
+2. Commit, then tag and push:
+
+   ```sh
+   git tag v0.2.0 && git push && git push --tags
+   ```
+
+The release workflow then:
+
+- builds Linux and macOS binaries (Intel and ARM);
+- publishes a GitHub Release with installers and the updater;
+- updates the Homebrew formula in
+  [anirudhi/homebrew-tap](https://github.com/anirudhi/homebrew-tap).
+
+Release settings live in `dist-workspace.toml`. After upgrading `dist`, run
+`dist generate` to refresh the workflow.
+
 ## Credits and licence
 
 Samādhi is free software, released under the GNU General Public License,
@@ -174,5 +220,7 @@ full list:
 - **Photographs:** public-domain (CC0) images from Wikimedia Commons;
   photographers are credited in `assets/photos/CREDITS.md`.
 - **US English dictionary:** from SCOWL, under its permissive licence.
+- **Music:** the five bundled tracks were generated with Google Gemini and
+  are dedicated to the public domain (CC0) as far as any rights exist.
 
 The sounds, painted scenes and app icon were made for this project.
