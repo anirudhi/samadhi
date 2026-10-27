@@ -14,7 +14,8 @@ becomes its notes on GitHub.
   reloads within seconds of syncing. If you also have unsaved edits, the
   other version is kept beside yours as a conflicted copy.
 - **macOS:** the app adds `Samādhi.app` to `~/Applications` on first run,
-  so a Homebrew install appears in Launchpad and Spotlight.
+  so a Homebrew install appears in Launchpad and Spotlight. The open
+  dialog no longer greys out text files with other extensions.
 
 ## 0.1.0
 

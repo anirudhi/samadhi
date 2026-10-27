@@ -544,9 +544,16 @@ impl SamadhiApp {
             .map(Path::to_path_buf)
             .or_else(|| std::fs::create_dir_all(&documents).ok().map(|()| documents))
             .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()));
-        let mut dialog = rfd::FileDialog::new()
-            .add_filter("Markdown and text", document::TEXT_EXTENSIONS)
-            .add_filter("All files", &["*"]);
+        let mut dialog = rfd::FileDialog::new();
+        // macOS merges the filters into one list of allowed extensions,
+        // where "*" matches nothing: any other text file (and the name
+        // typed when saving) would be refused. Opening checks the contents
+        // anyway, so offer every file there.
+        if !cfg!(target_os = "macos") {
+            dialog = dialog
+                .add_filter("Markdown and text", document::TEXT_EXTENSIONS)
+                .add_filter("All files", &["*"]);
+        }
         if let Some(dir) = dir {
             dialog = dialog.set_directory(dir);
         }
