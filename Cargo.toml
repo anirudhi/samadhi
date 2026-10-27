@@ -1,6 +1,6 @@
 [package]
 name = "samadhi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Samādhi: a calm, distraction-free, full-screen writing app with ambient music and typing sounds"

@@ -182,6 +182,44 @@ impl BuiltinClick {
     }
 }
 
+/// A soft singing-bowl tone for the end of a timer: struck once, then
+/// again more quietly, ringing out over a few seconds. Mono, at
+/// [`SAMPLE_RATE`].
+pub fn chime() -> Vec<f32> {
+    const PITCH: f32 = 392.0; // G4
+    // Bowls ring with inharmonic overtones; higher ones die away sooner.
+    const MODES: [(f32, f32, f32); 4] = [
+        (1.0, 2.6, 0.55),
+        (2.71, 1.3, 0.22),
+        (5.15, 0.6, 0.1),
+        (8.5, 0.25, 0.04),
+    ];
+    let strike = |t: f32| -> f32 {
+        if t < 0.0 {
+            return 0.0;
+        }
+        let attack = (t / 0.004).min(1.0);
+        MODES
+            .iter()
+            .map(|&(ratio, tau, amp)| {
+                // A slight beat between two close partials makes it shimmer.
+                let f = PITCH * ratio;
+                let beat = 1.0 + 0.25 * (TAU * 1.3 * t).sin();
+                (TAU * f * t).sin() * (-t / tau).exp() * amp * beat
+            })
+            .sum::<f32>()
+            * attack
+    };
+    let len = (4.5 * SR) as usize;
+    let out = (0..len)
+        .map(|i| {
+            let t = i as f32 / SR;
+            f32::midpoint(strike(t), 0.6 * strike(t - 1.4))
+        })
+        .collect();
+    fade_out(out, 0.3)
+}
+
 /// Applies a linear fade over the last `secs`, so a sound never ends on a
 /// non-zero sample (which is heard as a pop).
 fn fade_out(mut samples: Vec<f32>, secs: f32) -> Vec<f32> {
@@ -440,6 +478,14 @@ mod tests {
             assert!(rms(&s) > 0.005, "{name} is silent");
             assert!(s.last().unwrap().abs() < 0.01, "{name} ends with a pop");
         }
+    }
+
+    #[test]
+    fn the_chime_is_gentle_and_ends_cleanly() {
+        let s = chime();
+        let peak = s.iter().fold(0.0_f32, |m, x| m.max(x.abs()));
+        assert!(peak > 0.1 && peak < 0.6, "peak {peak}");
+        assert!(s.last().unwrap().abs() < 1e-3, "ends with a pop");
     }
 
     #[test]

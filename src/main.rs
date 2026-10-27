@@ -54,6 +54,8 @@ fn main() -> ExitCode {
 
     #[cfg(target_os = "linux")]
     samadhi::desktop::ensure_launcher();
+    #[cfg(target_os = "macos")]
+    samadhi::macos::ensure_app_bundle();
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_NAME)

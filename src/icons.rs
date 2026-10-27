@@ -35,10 +35,13 @@ pub enum Icon {
     Motion,
     Markdown,
     SpellCheck,
+    Timer,
+    Play,
+    Pause,
 }
 
 impl Icon {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 23] = [
         Self::Font,
         Self::Size,
         Self::Picture,
@@ -59,6 +62,9 @@ impl Icon {
         Self::Motion,
         Self::Markdown,
         Self::SpellCheck,
+        Self::Timer,
+        Self::Play,
+        Self::Pause,
     ];
 
     fn svg(self) -> &'static str {
@@ -88,6 +94,9 @@ impl Icon {
             Self::Motion => lucide!("wind"),
             Self::Markdown => lucide!("heading"),
             Self::SpellCheck => lucide!("spell-check"),
+            Self::Timer => lucide!("timer"),
+            Self::Play => lucide!("play"),
+            Self::Pause => lucide!("pause"),
         }
     }
 }

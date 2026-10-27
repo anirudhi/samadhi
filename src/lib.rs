@@ -13,6 +13,8 @@ pub mod desktop;
 pub mod document;
 pub mod fonts;
 pub mod icons;
+#[cfg(any(target_os = "macos", test))]
+pub mod macos;
 pub mod markdown;
 pub mod page;
 pub mod recovery;
@@ -21,6 +23,7 @@ pub mod settings;
 pub mod spell;
 pub mod stage;
 pub mod theme;
+pub mod timer;
 pub mod widgets;
 
 use std::path::PathBuf;

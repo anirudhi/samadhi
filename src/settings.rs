@@ -48,10 +48,13 @@ pub struct Settings {
     pub spell_check: bool,
     /// The document open when the app was last closed; reopened at start.
     pub last_file: Option<PathBuf>,
-    /// Where new documents are created (default `~/Documents/Samādhi`).
+    /// Where new documents are created (default: a `Samadhi` folder in
+    /// Google Drive when it is installed, else `~/Documents/Samādhi`).
     pub documents_dir: Option<PathBuf>,
     /// Extension for new documents (`md` by default).
     pub default_extension: String,
+    /// Length of the focus timer, in minutes.
+    pub timer_minutes: u32,
 }
 
 impl Default for Settings {
@@ -74,6 +77,7 @@ impl Default for Settings {
             last_file: None,
             documents_dir: None,
             default_extension: "md".to_owned(),
+            timer_minutes: crate::timer::DEFAULT_MINUTES,
         }
     }
 }
@@ -81,16 +85,18 @@ impl Default for Settings {
 impl Settings {
     /// The folder new documents go in.
     pub fn documents_dir(&self) -> PathBuf {
-        self.documents_dir.clone().unwrap_or_else(|| {
-            let base = directories::UserDirs::new().map_or_else(
-                || PathBuf::from("."),
-                |d| {
-                    d.document_dir()
-                        .map_or_else(|| d.home_dir().to_path_buf(), Path::to_path_buf)
-                },
-            );
-            base.join(crate::APP_NAME)
-        })
+        if let Some(dir) = &self.documents_dir {
+            return dir.clone();
+        }
+        let Some(user) = directories::UserDirs::new() else {
+            return PathBuf::from(".");
+        };
+        if let Some(drive) = google_drive_folder(user.home_dir()) {
+            return drive;
+        }
+        user.document_dir()
+            .unwrap_or_else(|| user.home_dir())
+            .join(crate::APP_NAME)
     }
 
     /// Location of the settings file, if the platform has a config dir.
@@ -143,6 +149,9 @@ impl Settings {
             .trim()
             .trim_start_matches('.')
             .to_ascii_lowercase();
+        self.timer_minutes = self
+            .timer_minutes
+            .clamp(crate::timer::MIN_MINUTES, crate::timer::MAX_MINUTES);
         if self.default_extension.is_empty() {
             "md".clone_into(&mut self.default_extension);
         }
@@ -154,6 +163,34 @@ impl Settings {
         }
         self
     }
+}
+
+/// A `Samadhi` folder inside Google Drive, if Drive is synced to this
+/// computer, so writing is backed up and shared between devices with no
+/// setup. It goes in a `Writing` folder when the Drive has one.
+///
+/// Looks where Google Drive for desktop keeps it on macOS
+/// (`~/Library/CloudStorage/GoogleDrive-<account>/My Drive`), its older
+/// locations, and the usual places for a Drive mounted on Linux.
+fn google_drive_folder(home: &Path) -> Option<PathBuf> {
+    let mut roots: Vec<PathBuf> = fs::read_dir(home.join("Library/CloudStorage"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("GoogleDrive-"))
+        .map(|e| e.path().join("My Drive"))
+        .collect();
+    roots.sort();
+    roots.extend(
+        ["Google Drive/My Drive", "Google Drive", "GoogleDrive"]
+            .iter()
+            .map(|p| home.join(p)),
+    );
+    let root = roots.into_iter().find(|r| r.is_dir())?;
+    let writing = root.join("Writing");
+    // ASCII, unlike the app's name: macOS and Linux store accented file
+    // names differently, which can make sync tools see two folders.
+    Some(if writing.is_dir() { writing } else { root }.join("Samadhi"))
 }
 
 #[cfg(test)]
@@ -199,6 +236,22 @@ mod tests {
             Settings::load_or_default(Some(&missing)),
             Settings::default()
         );
+    }
+
+    #[test]
+    fn documents_go_to_google_drive_when_it_is_installed() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        assert_eq!(google_drive_folder(home), None);
+
+        let linux = home.join("GoogleDrive");
+        fs::create_dir_all(&linux).unwrap();
+        assert_eq!(google_drive_folder(home), Some(linux.join("Samadhi")));
+
+        // Google Drive for desktop on a Mac wins, and a Writing folder is used.
+        let mac = home.join("Library/CloudStorage/GoogleDrive-me@example.com/My Drive");
+        fs::create_dir_all(mac.join("Writing")).unwrap();
+        assert_eq!(google_drive_folder(home), Some(mac.join("Writing/Samadhi")));
     }
 
     #[test]

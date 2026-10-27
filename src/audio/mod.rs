@@ -236,6 +236,21 @@ impl AudioEngine {
         Ok(())
     }
 
+    /// Plays the timer's end chime. It sounds even when typing sounds are
+    /// muted, since it is the point of setting a timer.
+    pub fn play_chime(&mut self) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        let samples = synth::chime();
+        let buffer = SamplesBuffer::new(
+            NonZero::new(1).expect("1 is non-zero"),
+            NonZero::new(synth::SAMPLE_RATE).expect("non-zero"),
+            samples,
+        );
+        device.mixer().add(buffer.amplify(0.8));
+    }
+
     fn play(&mut self, click: &Click) {
         let Some(device) = &self.device else {
             return;

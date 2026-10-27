@@ -4,8 +4,8 @@
 
 *Samādhi* (Pali): concentration, one-pointed attention.
 
-A calm, distraction-free, full-screen writing app for Linux, heavily inspired
-by [OmmWriter](https://ommwriter.com). You get one page, a living landscape
+A calm, distraction-free, full-screen writing app for Linux and macOS,
+heavily inspired by [OmmWriter](https://ommwriter.com). You get one page, a living landscape
 behind it, ambient music and soft typing sounds. The interface fades away the moment you start typing and
 comes back when you move the mouse.
 
@@ -29,6 +29,23 @@ markdown styling.
   - Quitting, starting a new document or opening a file with an unsaved
     draft asks whether to save it first.
   - The last saved file opens again at start-up.
+- **Google Drive, and writing on several computers:**
+  - If Google Drive is synced to your computer, new documents go to a
+    `Samadhi` folder in it (inside `Writing`, if your Drive has that
+    folder), so your writing is backed up and on every machine. Samādhi
+    finds Google Drive for desktop on macOS, and a Drive mounted at
+    `~/GoogleDrive` or `~/Google Drive` on Linux.
+  - When the open file changes on another computer, Samādhi picks up the
+    new version within seconds of it syncing.
+  - If you have unsaved edits when that happens, neither version is lost:
+    yours stays open and the other is saved beside it as
+    `Name (conflicted copy).md`.
+- **Focus timer:**
+  - Set a length from 1 to 60 minutes with the slider, or start 5 or 25
+    minutes with one click.
+  - A small ring and countdown sit under the page's corner and stay
+    faintly visible while you write. Click them to pause.
+  - A soft bowl chime sounds when the time is up.
 - **Live markdown (optional).** As you type, `# headings`, `**bold**`,
   `*italic*`, `> quotes`, lists, `` `code` ``, links and `~~strikethrough~~`
   render styled, much like Notion. The syntax marks fade away except on the
@@ -88,9 +105,14 @@ brew install anirudhi/tap/samadhi
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.sh | sh
 ```
 
-This puts `samadhi` in `~/.local/bin`, with no root needed. On Linux,
-Samādhi adds itself to your application menu, with its icon, the first time
-you run it.
+This puts `samadhi` in `~/.local/bin`, with no root needed.
+
+The first time you run it (type `samadhi` in a terminal), Samādhi adds
+itself to your apps, with its icon:
+
+- **macOS:** `~/Applications/Samādhi.app`, which appears in Launchpad and
+  Spotlight and can be kept in the Dock.
+- **Linux:** an entry in your application menu.
 
 You can also download a build for your system from the
 [releases page](https://github.com/anirudhi/samadhi/releases).
@@ -143,7 +165,7 @@ their brightness.
 Settings live in `~/.config/samadhi/settings.toml`, which you can edit by
 hand:
 
-- `documents_dir` changes the folder the save dialog starts in.
+- `documents_dir` sets the folder new documents are saved in.
 - `default_extension` sets the extension for new documents (`md` by default).
 
 ## Development
@@ -167,6 +189,8 @@ Layout of `src/`:
 | `document` | Plain-text and Markdown files |
 | `markdown` | Live markdown styling |
 | `audio` | Playback and sound synthesis |
+| `timer` | The focus timer |
+| `desktop`, `macos` | Adding the app to the Linux menu and macOS Applications |
 | `settings`, `page`, `fonts`, `theme`, `icons`, `widgets` | Supporting pieces |
 
 ## Releasing a new version

@@ -29,6 +29,7 @@ use crate::settings::{DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PageRect,
 use crate::spell::SpellChecker;
 use crate::stage::Stage;
 use crate::theme;
+use crate::timer::{self, Timer};
 use crate::widgets::{
     ICON_BUTTON, caption, icon_button, list_choice, slider, switch, text_choice, thumb_button,
 };
@@ -56,6 +57,9 @@ const AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
 const STATUS_TIME: Duration = Duration::from_secs(3);
 const ERROR_TIME: Duration = Duration::from_secs(8);
 const FULLSCREEN_RETRY: Duration = Duration::from_secs(1);
+/// How often the open file is checked for changes made elsewhere (another
+/// app, or a sync from another device).
+const DISK_CHECK: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -64,16 +68,18 @@ enum Section {
     Theme,
     Music,
     Keyboard,
+    Timer,
     File,
 }
 
 impl Section {
-    const ALL: [(Self, Icon, &'static str); 6] = [
+    const ALL: [(Self, Icon, &'static str); 7] = [
         (Self::Text, Icon::Font, "Font"),
         (Self::Size, Icon::Size, "Text size"),
         (Self::Theme, Icon::Picture, "Theme"),
         (Self::Music, Icon::Music, "Music"),
         (Self::Keyboard, Icon::Keyboard, "Typing sounds"),
+        (Self::Timer, Icon::Timer, "Timer"),
         (Self::File, Icon::Document, "Document"),
     ];
 }
@@ -139,6 +145,8 @@ pub struct SamadhiApp {
     recovery: Recovery,
     /// An action waiting for the user to decide about an unsaved draft.
     pending: Option<Pending>,
+    last_disk_check: Instant,
+    timer: Timer,
 
     audio: AudioEngine,
     themes: Catalog<ThemeKind>,
@@ -227,6 +235,7 @@ impl SamadhiApp {
             AudioEngine::silent()
         };
 
+        let timer = Timer::new(settings.timer_minutes);
         let mut app = Self {
             settings,
             settings_path: options.settings_path,
@@ -235,6 +244,8 @@ impl SamadhiApp {
             last_edit: None,
             recovery: Recovery::new(options.recovery_dir.clone()),
             pending: None,
+            last_disk_check: Instant::now(),
+            timer,
             audio,
             themes,
             music,
@@ -633,8 +644,40 @@ impl SamadhiApp {
         false
     }
 
+    /// Picks up changes made to the open file elsewhere, such as edits
+    /// synced from another device. A document with no unsaved edits simply
+    /// reloads. If there are unsaved edits too, the other version is kept
+    /// beside it as a conflicted copy, so neither is lost.
+    fn sync_with_disk(&mut self) {
+        self.last_disk_check = Instant::now();
+        let Some(mut theirs) = self.doc.changed_on_disk() else {
+            return;
+        };
+        if !self.doc.is_dirty() {
+            self.doc = theirs;
+            self.last_edit = None;
+            self.set_status("Updated with changes made elsewhere", false);
+            return;
+        }
+        let Some(path) = self.doc.path() else {
+            return;
+        };
+        let copy = document::conflict_copy_path(path);
+        let result = theirs.save_as(&copy).map(|_| {
+            format!(
+                "This file was also changed elsewhere. That version is kept as {}",
+                theirs.display_name()
+            )
+        });
+        if let Some(message) = self.report(result) {
+            self.set_status(message, false);
+        }
+    }
+
     /// Writes a saved document to its file. Returns whether it worked.
     fn write_file(&mut self) -> bool {
+        // Never write over a version from elsewhere that hasn't been seen.
+        self.sync_with_disk();
         match self.doc.save() {
             Ok(SaveOutcome::Saved) => true,
             Ok(SaveOutcome::SavedAsUtf8) => {
@@ -1190,6 +1233,7 @@ impl SamadhiApp {
             Section::Theme => ("Theme", Some(self.themes.current().name.clone())),
             Section::Music => ("Music", None),
             Section::Keyboard => ("Typing sound", None),
+            Section::Timer => ("Timer", Some(self.timer_detail())),
             Section::File => (
                 "Document",
                 Some(if self.doc.path().is_none() {
@@ -1312,6 +1356,7 @@ impl SamadhiApp {
                         self.settings_touched();
                     }
                 }
+                Section::Timer => self.timer_controls(ui),
                 Section::File => {
                     if icon_button(ui, Icon::New, "New document (Ctrl+N)", false).clicked() {
                         self.request(&ctx, Pending::New);
@@ -1330,6 +1375,7 @@ impl SamadhiApp {
         });
         match section {
             Section::Text => self.text_switches(ui, &ctx),
+            Section::Timer => self.timer_slider(ui),
             Section::Music => {
                 let current = self.music.current_index();
                 let names: Vec<String> = self
@@ -1408,6 +1454,142 @@ impl SamadhiApp {
                 self.toggle_spell_check(ctx);
             }
         });
+    }
+
+    // ----- timer ------------------------------------------------------------
+
+    /// The flyout title's detail: what the timer is doing.
+    fn timer_detail(&self) -> String {
+        let now = Instant::now();
+        let left = timer::clock(self.timer.remaining(now));
+        if self.timer.is_running() {
+            format!("{left} left")
+        } else if self.timer.is_active() {
+            format!("{left} left, paused")
+        } else {
+            format!("{} min", self.timer.minutes())
+        }
+    }
+
+    fn set_timer_minutes(&mut self, minutes: u32) {
+        self.timer.set_minutes(minutes, Instant::now());
+        self.settings.timer_minutes = self.timer.minutes();
+        self.settings_touched();
+    }
+
+    fn toggle_timer(&mut self) {
+        self.timer.toggle(Instant::now());
+    }
+
+    /// Play/pause and reset, then one-click lengths that start at once.
+    fn timer_controls(&mut self, ui: &mut egui::Ui) {
+        let (icon, label) = if self.timer.is_running() {
+            (Icon::Pause, "Pause timer")
+        } else if self.timer.is_active() {
+            (Icon::Play, "Resume timer")
+        } else {
+            (Icon::Play, "Start timer")
+        };
+        if icon_button(ui, icon, label, self.timer.is_running()).clicked() {
+            self.toggle_timer();
+        }
+        let resettable = self.timer.is_active();
+        let reset = ui.add_enabled_ui(resettable, |ui| {
+            if !resettable {
+                ui.multiply_opacity(0.35);
+            }
+            icon_button(ui, Icon::DefaultSize, "Reset timer", false)
+        });
+        if reset.inner.clicked() {
+            self.timer.reset();
+        }
+        ui.add_space(6.0);
+        for minutes in timer::PRESETS {
+            let font = egui::FontId::proportional(13.0);
+            let chosen = self.timer.minutes() == minutes;
+            if text_choice(ui, &format!("{minutes} min"), font, chosen).clicked() {
+                self.set_timer_minutes(minutes);
+                self.timer.start(Instant::now());
+            }
+        }
+    }
+
+    /// Any other length, from 1 to 60 minutes.
+    fn timer_slider(&mut self, ui: &mut egui::Ui) {
+        let span = (timer::MAX_MINUTES - timer::MIN_MINUTES) as f32;
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let mut value = (self.timer.minutes() - timer::MIN_MINUTES) as f32 / span;
+            if slider(ui, &mut value, "Timer length") {
+                let minutes = timer::MIN_MINUTES + (value * span).round() as u32;
+                if minutes != self.timer.minutes() {
+                    self.set_timer_minutes(minutes);
+                }
+            }
+        });
+    }
+
+    /// Ends the countdown with a chime once it reaches zero, and keeps the
+    /// display ticking.
+    fn tick_timer(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        if self.timer.poll(now) {
+            self.audio.play_chime();
+            let minutes = self.timer.minutes();
+            let unit = if minutes == 1 { "minute" } else { "minutes" };
+            self.set_status(format!("{minutes} {unit} are up"), false);
+        }
+        if let Some(next) = self.timer.next_tick(now) {
+            ctx.request_repaint_after(next);
+        }
+    }
+
+    /// The countdown under the page's right corner: a ring that empties and
+    /// the time left. It stays (faintly) while you write, and a click
+    /// pauses or resumes it.
+    fn timer_badge(&mut self, ctx: &egui::Context, page: Rect, fade: f32) {
+        let show =
+            ctx.animate_bool_with_time(Id::unique("timer-badge"), self.timer.is_active(), FADE_IN);
+        if show <= 0.0 {
+            return;
+        }
+        let now = Instant::now();
+        let left = self.timer.remaining(now);
+        let fraction = self.timer.fraction_left(now);
+        let running = self.timer.is_running();
+        let ink = self.stage.ink();
+        // Quieter while writing, clearer when the interface is up.
+        let opacity = show * (0.75 + 0.25 * fade);
+        let label = if running {
+            "Pause timer"
+        } else {
+            "Resume timer"
+        };
+        let clicked = egui::Area::new(Id::unique("timer-badge-area"))
+            .order(egui::Order::Middle)
+            .fixed_pos(pos2(page.right(), page.bottom() + 14.0))
+            .pivot(Align2::RIGHT_TOP)
+            .show(ctx, |ui| {
+                ui.multiply_opacity(opacity);
+                // Level with the word count (rows are otherwise 30 pt tall).
+                ui.spacing_mut().interact_size.y = 0.0;
+                let r = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::splat(12.0), egui::Sense::hover());
+                        paint_ring(ui.painter(), rect.center(), 4.5, fraction, ink, running);
+                        caption(ui, &timer::clock(left), 12.5, ink.gamma_multiply(0.6), 0.4);
+                    })
+                    .response
+                    .interact(egui::Sense::click());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+                r.on_hover_text(label).clicked()
+            })
+            .inner;
+        if clicked {
+            self.toggle_timer();
+        }
     }
 
     /// Word count, centred under the page.
@@ -1556,6 +1738,8 @@ impl eframe::App for SamadhiApp {
             self.menu_area = None;
         }
         self.word_count(&ctx, page, fade);
+        self.tick_timer(&ctx);
+        self.timer_badge(&ctx, page, fade);
         ctx.set_cursor_icon(if self.ui_visible {
             cursor
         } else {
@@ -1565,6 +1749,12 @@ impl eframe::App for SamadhiApp {
         self.toast(&ctx);
 
         self.autosave();
+        if self.doc.path().is_some() {
+            if self.last_disk_check.elapsed() >= DISK_CHECK {
+                self.sync_with_disk();
+            }
+            ctx.request_repaint_after(DISK_CHECK);
+        }
         if self
             .settings_changed
             .is_some_and(|t| t.elapsed() >= SETTINGS_SAVE_DELAY)
@@ -1620,6 +1810,35 @@ fn suggested_file_name(text: &str, extension: &str) -> String {
 }
 
 /// The id of the writing area.
+/// A thin ring showing `fraction` of a full turn, clockwise from the top,
+/// over a faint full circle. Paused, the ring is drawn fainter.
+fn paint_ring(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    fraction: f32,
+    ink: Color32,
+    running: bool,
+) {
+    painter.circle_stroke(center, radius, Stroke::new(1.0, ink.gamma_multiply(0.22)));
+    let steps = (48.0 * fraction).ceil() as usize;
+    if steps == 0 {
+        return;
+    }
+    let points: Vec<_> = (0..=steps)
+        .map(|i| {
+            let turn = fraction * i as f32 / steps as f32;
+            let angle = std::f32::consts::TAU * turn - std::f32::consts::FRAC_PI_2;
+            center + radius * vec2(angle.cos(), angle.sin())
+        })
+        .collect();
+    let strength = if running { 0.7 } else { 0.4 };
+    painter.add(egui::Shape::line(
+        points,
+        Stroke::new(1.5, ink.gamma_multiply(strength)),
+    ));
+}
+
 fn editor_id() -> Id {
     Id::unique("page-text")
 }
@@ -1819,6 +2038,67 @@ mod ui_tests {
 
         let h = harness(dir.path());
         assert_eq!(h.state().doc.path(), Some(path.as_path()));
+    }
+
+    fn open_file(dir: &Path, path: &Path) -> Harness<'static, SamadhiApp> {
+        let options = options(dir, Some(path.to_path_buf()));
+        let mut h = Harness::builder()
+            .with_size(vec2(1600.0, 1000.0))
+            .build_eframe(move |cc| SamadhiApp::new(cc, options));
+        h.run_steps(2);
+        h
+    }
+
+    #[test]
+    fn edits_synced_from_another_device_reload_or_are_kept_beside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.md");
+        std::fs::write(&path, "written here").unwrap();
+        let mut h = open_file(dir.path(), &path);
+
+        // Nothing unsaved here: the other device's version simply appears.
+        std::fs::write(&path, "written on the Mac").unwrap();
+        h.state_mut().sync_with_disk();
+        assert_eq!(h.state().doc.text, "written on the Mac");
+        assert!(!h.state().doc.is_dirty());
+
+        // Unsaved edits here and a change there: keep both.
+        h.get_by_role(egui::Role::MultilineTextInput)
+            .type_text(", then more here");
+        h.run_steps(2);
+        std::fs::write(&path, "rewritten on the Mac").unwrap();
+        std::thread::sleep(AUTOSAVE_DELAY + Duration::from_millis(50));
+        h.run_steps(2);
+        // Ours is saved (typed where the cursor was) and theirs kept beside.
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved, h.state().doc.text);
+        assert!(saved.contains(", then more here") && saved.contains("Mac"));
+        let copy = dir.path().join("shared (conflicted copy).md");
+        assert_eq!(
+            std::fs::read_to_string(copy).unwrap(),
+            "rewritten on the Mac"
+        );
+    }
+
+    #[test]
+    fn timer_starts_from_a_preset_and_pauses_from_its_badge() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        assert!(h.query_by_label("Pause timer").is_none(), "no badge yet");
+        h.get_by_role_and_label(egui::Role::Button, "Timer").hover();
+        h.run_steps(3);
+        h.get_by_label("5 min").click();
+        h.run_steps(3);
+        assert!(h.state().timer.is_running());
+        assert_eq!(h.state().settings.timer_minutes, 5);
+
+        // The badge under the page pauses it, even with the dock hidden.
+        h.state_mut().ui_visible = false;
+        h.run_steps(30);
+        let badge = h.query_all_by_label("Pause timer").last().unwrap();
+        badge.click();
+        h.run_steps(2);
+        assert!(h.state().timer.is_active() && !h.state().timer.is_running());
     }
 
     #[test]
@@ -2045,6 +2325,9 @@ mod ui_tests {
         save(&mut h, "ui-1b-selection");
         h.key_press(Key::ArrowRight);
         // Move the mouse (somewhere new) to bring the faded interface back.
+        // (The pointer's first appearance has no movement, so move twice.)
+        h.hover_at(pos2(50.0, 50.0));
+        h.step();
         h.hover_at(pos2(60.0, 60.0));
         h.run_steps(10);
         // Let the theme previews finish so the grid is fully drawn.
@@ -2066,6 +2349,11 @@ mod ui_tests {
             h.run_steps(10);
             save(&mut h, name);
         }
+        h.get_by_role_and_label(egui::Role::Button, "Timer").hover();
+        h.run_steps(3);
+        h.get_by_label("25 min").click();
+        h.run_steps(10);
+        save(&mut h, "ui-4c-timer");
         // One switch off, to compare the two states side by side.
         h.get_by_role_and_label(egui::Role::Button, "Font").hover();
         h.run_steps(3);

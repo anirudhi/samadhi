@@ -7,8 +7,10 @@
 //! restored on save. That way a document round-trips unchanged.
 
 use std::fs;
+use std::hash::{Hash as _, Hasher as _};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::{Context as _, bail};
 
@@ -40,6 +42,32 @@ impl LineEnding {
     }
 }
 
+/// What the file on disk looked like when it was last read or written, to
+/// notice when something else (another app, or a sync from another device)
+/// changes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    hash: u64,
+}
+
+impl Stamp {
+    fn of(meta: &fs::Metadata, bytes: &[u8]) -> Self {
+        let mut hasher = std::hash::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        Self {
+            modified: meta.modified().ok(),
+            len: meta.len(),
+            hash: hasher.finish(),
+        }
+    }
+
+    fn read(path: &Path, bytes: &[u8]) -> Option<Self> {
+        fs::metadata(path).ok().map(|meta| Self::of(&meta, bytes))
+    }
+}
+
 /// The open document. `text` always uses `\n` line endings internally.
 #[derive(Debug)]
 pub struct Document {
@@ -48,6 +76,7 @@ pub struct Document {
     encoding: TextEncoding,
     line_ending: LineEnding,
     dirty: bool,
+    disk: Option<Stamp>,
 }
 
 impl Default for Document {
@@ -58,6 +87,7 @@ impl Default for Document {
             encoding: TextEncoding::Utf8 { bom: false },
             line_ending: LineEnding::Lf,
             dirty: false,
+            disk: None,
         }
     }
 }
@@ -74,8 +104,12 @@ pub enum SaveOutcome {
 impl Document {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::from_bytes(path, &bytes, Stamp::read(path, &bytes))
+    }
+
+    fn from_bytes(path: &Path, bytes: &[u8], disk: Option<Stamp>) -> anyhow::Result<Self> {
         let (raw, encoding) =
-            decode(&bytes).with_context(|| format!("decoding {}", path.display()))?;
+            decode(bytes).with_context(|| format!("decoding {}", path.display()))?;
         let (text, line_ending) = normalize_line_endings(&raw);
         Ok(Self {
             text,
@@ -83,7 +117,27 @@ impl Document {
             encoding,
             line_ending,
             dirty: false,
+            disk,
         })
+    }
+
+    /// The version of the file now on disk, if something else has changed
+    /// it since this document last read or wrote it: another app, or a sync
+    /// from another device. Each change is reported once.
+    pub fn changed_on_disk(&mut self) -> Option<Self> {
+        let path = self.path.as_deref()?;
+        let seen = self.disk?;
+        let meta = fs::metadata(path).ok()?;
+        if meta.len() == seen.len && meta.modified().ok() == seen.modified {
+            return None;
+        }
+        let bytes = fs::read(path).ok()?;
+        let now = Stamp::of(&meta, &bytes);
+        self.disk = Some(now);
+        if now.hash == seen.hash {
+            return None; // Touched, not changed (a sync tool rewrote it).
+        }
+        Self::from_bytes(path, &bytes, Some(now)).ok()
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -129,6 +183,7 @@ impl Document {
             fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         write_atomically(path, &bytes)?;
+        self.disk = Stamp::read(path, &bytes);
         if outcome == SaveOutcome::SavedAsUtf8 {
             self.encoding = TextEncoding::Utf8 { bom: false };
         }
@@ -136,6 +191,29 @@ impl Document {
         self.dirty = false;
         Ok(outcome)
     }
+}
+
+/// A free name beside `path` for keeping a second version of it, e.g.
+/// `Essay (conflicted copy).md`, then `Essay (conflicted copy 2).md`.
+pub fn conflict_copy_path(path: &Path) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(|| "Untitled".into(), |s| s.to_string_lossy());
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (1..u32::MAX)
+        .map(|n| {
+            let tag = if n == 1 {
+                "conflicted copy".to_owned()
+            } else {
+                format!("conflicted copy {n}")
+            };
+            path.with_file_name(format!("{stem} ({tag}){ext}"))
+        })
+        .find(|candidate| !candidate.exists())
+        .expect("some name is free")
 }
 
 /// Words in `text`: runs of non-whitespace containing a letter or digit, so
@@ -426,6 +504,42 @@ mod tests {
         assert_eq!(
             normalize_line_endings("a\nb"),
             ("a\nb".into(), LineEnding::Lf)
+        );
+    }
+
+    #[test]
+    fn changes_made_elsewhere_are_noticed_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.md");
+        fs::write(&path, "first").unwrap();
+        let mut doc = Document::open(&path).unwrap();
+        assert!(doc.changed_on_disk().is_none());
+
+        // Our own saves are not changes from elsewhere.
+        doc.text = "ours".into();
+        doc.save().unwrap();
+        assert!(doc.changed_on_disk().is_none());
+
+        fs::write(&path, "theirs, from another device").unwrap();
+        let theirs = doc.changed_on_disk().expect("change noticed");
+        assert_eq!(theirs.text, "theirs, from another device");
+        assert!(doc.changed_on_disk().is_none(), "reported once");
+
+        // Rewriting the same bytes (as sync tools do) is not a change.
+        fs::write(&path, "theirs, from another device").unwrap();
+        assert!(doc.changed_on_disk().is_none());
+    }
+
+    #[test]
+    fn conflict_copies_get_free_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Essay.md");
+        let first = conflict_copy_path(&path);
+        assert_eq!(first, dir.path().join("Essay (conflicted copy).md"));
+        fs::write(&first, "x").unwrap();
+        assert_eq!(
+            conflict_copy_path(&path),
+            dir.path().join("Essay (conflicted copy 2).md")
         );
     }
 
