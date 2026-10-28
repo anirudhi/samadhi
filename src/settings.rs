@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_FONT_SIZE: f32 = 16.0;
 pub const MIN_FONT_SIZE: f32 = 8.0;
 pub const MAX_FONT_SIZE: f32 = 96.0;
+/// How many recently opened files are remembered.
+pub const RECENT_FILES: usize = 8;
 
 /// The writing area, in logical points relative to the window.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -48,6 +50,8 @@ pub struct Settings {
     pub spell_check: bool,
     /// The document open when the app was last closed; reopened at start.
     pub last_file: Option<PathBuf>,
+    /// Recently opened or saved files, newest first, each listed once.
+    pub recent_files: Vec<PathBuf>,
     /// Where new documents are created (default: a `Samadhi` folder in
     /// Google Drive when it is installed, else `~/Documents/Samādhi`).
     pub documents_dir: Option<PathBuf>,
@@ -75,6 +79,7 @@ impl Default for Settings {
             markdown: true,
             spell_check: false,
             last_file: None,
+            recent_files: Vec::new(),
             documents_dir: None,
             default_extension: "md".to_owned(),
             timer_minutes: crate::timer::DEFAULT_MINUTES,
@@ -135,6 +140,13 @@ impl Settings {
         crate::document::write_atomically(path, text.as_bytes())
     }
 
+    /// Puts `path` at the top of the recent files.
+    pub fn add_recent(&mut self, path: &Path) {
+        self.recent_files.retain(|p| p != path);
+        self.recent_files.insert(0, path.to_path_buf());
+        self.recent_files.truncate(RECENT_FILES);
+    }
+
     /// Clamps values that a hand-edited file could have made nonsensical.
     #[must_use]
     pub fn sanitized(mut self) -> Self {
@@ -152,6 +164,9 @@ impl Settings {
         self.timer_minutes = self
             .timer_minutes
             .clamp(crate::timer::MIN_MINUTES, crate::timer::MAX_MINUTES);
+        let mut seen = std::collections::HashSet::new();
+        self.recent_files.retain(|p| seen.insert(p.clone()));
+        self.recent_files.truncate(RECENT_FILES);
         if self.default_extension.is_empty() {
             "md".clone_into(&mut self.default_extension);
         }
@@ -252,6 +267,23 @@ mod tests {
         let mac = home.join("Library/CloudStorage/GoogleDrive-me@example.com/My Drive");
         fs::create_dir_all(mac.join("Writing")).unwrap();
         assert_eq!(google_drive_folder(home), Some(mac.join("Writing/Samadhi")));
+    }
+
+    #[test]
+    fn recent_files_are_unique_newest_first_and_capped() {
+        let mut s = Settings::default();
+        for name in ["a", "b", "a", "c"] {
+            s.add_recent(Path::new(name));
+        }
+        assert_eq!(s.recent_files, ["c", "a", "b"].map(PathBuf::from));
+        for i in 0..20 {
+            s.add_recent(&PathBuf::from(i.to_string()));
+        }
+        assert_eq!(s.recent_files.len(), RECENT_FILES);
+        assert_eq!(s.recent_files[0], PathBuf::from("19"));
+
+        s.recent_files = ["x", "y", "x"].map(PathBuf::from).to_vec();
+        assert_eq!(s.sanitized().recent_files, ["x", "y"].map(PathBuf::from));
     }
 
     #[test]

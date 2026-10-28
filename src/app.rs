@@ -31,7 +31,8 @@ use crate::stage::Stage;
 use crate::theme;
 use crate::timer::{self, Timer};
 use crate::widgets::{
-    ICON_BUTTON, caption, icon_button, list_choice, slider, switch, text_choice, thumb_button,
+    ICON_BUTTON, caption, icon_button, icon_button_bare, list_choice, slider, switch, text_choice,
+    thumb_button,
 };
 
 const DOCK_GAP: f32 = 28.0;
@@ -189,6 +190,9 @@ pub struct SamadhiApp {
     drag: Option<Drag>,
     ui_visible: bool,
     section: Option<Section>,
+    /// The recent files list, shown once the open button is hovered and
+    /// kept while the pointer stays on the document flyout.
+    recent_open: bool,
     /// Screen area of the dock and open flyout, used to close the flyout
     /// once the pointer wanders away.
     menu_area: Option<Rect>,
@@ -285,6 +289,7 @@ impl SamadhiApp {
             drag: None,
             ui_visible: true,
             section: None,
+            recent_open: false,
             menu_area: None,
             status: None,
             spell: None,
@@ -703,6 +708,9 @@ impl SamadhiApp {
     /// Records the current file so the app reopens it next time.
     fn remember_file(&mut self) {
         self.settings.last_file = self.doc.path().map(Path::to_path_buf);
+        if let Some(path) = self.doc.path() {
+            self.settings.add_recent(path);
+        }
         self.last_edit = None;
         self.settings_touched();
     }
@@ -1282,6 +1290,9 @@ impl SamadhiApp {
             .response
             .rect;
 
+        if self.section != Some(Section::File) {
+            self.recent_open = false;
+        }
         let mut area = dock;
         if let Some((section, row)) = active_row {
             // The controls sit level with the hovered icon; the title above.
@@ -1461,7 +1472,11 @@ impl SamadhiApp {
                     if icon_button(ui, Icon::New, "New document (Ctrl+N)", false).clicked() {
                         self.request(&ctx, Pending::New);
                     }
-                    if icon_button(ui, Icon::Open, "Open (Ctrl+O)", false).clicked() {
+                    let open = icon_button_bare(ui, Icon::Open, "Open (Ctrl+O)", self.recent_open);
+                    if open.hovered() {
+                        self.recent_open = true;
+                    }
+                    if open.clicked() {
                         self.request(&ctx, Pending::Open);
                     }
                     if icon_button(ui, Icon::Save, "Save (Ctrl+S)", false).clicked() {
@@ -1476,6 +1491,7 @@ impl SamadhiApp {
         match section {
             Section::Text => self.text_switches(ui, &ctx),
             Section::Timer => self.timer_slider(ui),
+            Section::File if self.recent_open => self.recent_files(ui, &ctx),
             Section::Music => {
                 let current = self.music.current_index();
                 let names: Vec<String> = self
@@ -1554,6 +1570,55 @@ impl SamadhiApp {
                 self.toggle_spell_check(ctx);
             }
         });
+    }
+
+    /// Recently opened files, newest first. Names that occur twice show
+    /// their folder too; hovering shows the full path.
+    fn recent_files(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let current = self.doc.path().map(Path::to_path_buf);
+        let recent = self.settings.recent_files.clone();
+        let name = |p: &Path| {
+            p.file_name().map_or_else(
+                || p.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        };
+        let mut chosen = None;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.set_height(FLYOUT_TITLE_HEIGHT);
+            ui.add_space(5.0);
+            let p = theme::current(ui);
+            let text = if recent.is_empty() {
+                "NO RECENT FILES"
+            } else {
+                "RECENT"
+            };
+            caption(ui, text, 8.5, p.ink.gamma_multiply(0.6), 1.4);
+        });
+        for path in &recent {
+            let mut label = name(path);
+            if recent.iter().filter(|p| name(p) == label).count() > 1
+                && let Some(folder) = path.parent().and_then(Path::file_name)
+            {
+                label = format!("{label} — {}", folder.to_string_lossy());
+            }
+            let selected = current.as_deref() == Some(path.as_path());
+            let r = list_choice(ui, &label, selected).on_hover_text(path.display().to_string());
+            if r.clicked() && !selected {
+                chosen = Some(path.clone());
+            }
+        }
+        if let Some(path) = chosen {
+            self.recent_open = false;
+            self.section = None;
+            self.request(ctx, Pending::OpenFile(path.clone()));
+            if self.doc.path() != Some(path.as_path()) && self.pending.is_none() {
+                // It could not be opened (moved or deleted): forget it.
+                self.settings.recent_files.retain(|p| *p != path);
+                self.settings_touched();
+            }
+        }
     }
 
     // ----- timer ------------------------------------------------------------
@@ -2260,6 +2325,35 @@ mod ui_tests {
     }
 
     #[test]
+    fn hovering_open_lists_recent_files_to_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, second) = (dir.path().join("first.md"), dir.path().join("second.md"));
+        std::fs::write(&first, "the first").unwrap();
+        std::fs::write(&second, "the second").unwrap();
+        let mut h = open_file(dir.path(), &first);
+        h.state_mut().open_path(&second);
+        h.state_mut().open_path(&first);
+        h.state_mut().open_path(&second);
+        assert_eq!(
+            h.state().settings.recent_files,
+            [second.clone(), first.clone()]
+        );
+
+        h.get_by_role_and_label(egui::Role::Button, "Document")
+            .hover();
+        h.run_steps(3);
+        assert!(h.query_by_label("first.md").is_none(), "hidden until Open");
+        h.get_by_label("Open (Ctrl+O)").hover();
+        h.run_steps(3);
+        h.get_by_label("first.md").hover();
+        h.run_steps(2);
+        h.get_by_label("first.md").click();
+        h.run_steps(3);
+        assert_eq!(h.state().doc.path(), Some(first.as_path()));
+        assert_eq!(h.state().doc.text, "the first");
+    }
+
+    #[test]
     fn timer_starts_from_a_preset_and_pauses_from_its_badge() {
         let dir = tempfile::tempdir().unwrap();
         let mut h = harness(dir.path());
@@ -2529,6 +2623,19 @@ mod ui_tests {
             h.run_steps(10);
             save(&mut h, name);
         }
+        let story = h.state().doc.path().unwrap().to_path_buf();
+        for name in ["Morning pages.md", "Letters home.md"] {
+            let other = story.with_file_name(name);
+            std::fs::write(&other, "…").unwrap();
+            h.state_mut().open_path(&other);
+        }
+        h.state_mut().open_path(&story);
+        h.get_by_role_and_label(egui::Role::Button, "Document")
+            .hover();
+        h.run_steps(3);
+        h.get_by_label("Open (Ctrl+O)").hover();
+        h.run_steps(10);
+        save(&mut h, "ui-4d-recent");
         h.get_by_role_and_label(egui::Role::Button, "Timer").hover();
         h.run_steps(3);
         h.get_by_label("25 min").click();

@@ -3,6 +3,11 @@
 All notable changes to Samādhi are recorded here. Each release's section
 becomes its notes on GitHub.
 
+## Unreleased
+
+- **Recent files:** hovering the open button lists the last eight files
+  you opened, newest first; click one to reopen it.
+
 ## 0.2.0
 
 - **Focus timer:** set 1 to 60 minutes with a slider, or start 5 or 25

@@ -52,6 +52,17 @@ fn paint_icon(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
 /// A bare icon button: slightly faded at rest, solid on hover, accent when
 /// `active` (selected section or toggled on).
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, active: bool) -> egui::Response {
+    icon_button_bare(ui, icon, label, active).on_hover_text(label)
+}
+
+/// An [`icon_button`] without a tooltip, for buttons whose hover shows
+/// something else in its place.
+pub fn icon_button_bare(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    active: bool,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(ICON_BUTTON), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let p = theme::current(ui);
@@ -68,7 +79,7 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, active: bool) -> 
         Rect::from_center_size(rect.center(), Vec2::splat(ICON_SIZE)),
         color,
     );
-    response.on_hover_text(label)
+    response
 }
 
 /// A word set in `font`; the selected one is in the accent colour with a
