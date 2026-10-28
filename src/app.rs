@@ -964,9 +964,9 @@ impl SamadhiApp {
         }
         if let Some((name, result)) = self.scene_loader.poll() {
             match result {
-                Ok(scene) => {
-                    theme::install(ctx, scene.dark);
-                    self.stage.show(ctx, scene);
+                Ok(prepared) => {
+                    theme::install(ctx, prepared.scene.dark);
+                    self.stage.show(ctx, prepared);
                 }
                 Err(err) => self.set_status(format!("Could not show {name}: {err:#}"), true),
             }
@@ -1092,14 +1092,27 @@ impl SamadhiApp {
 
     // ----- drawing ----------------------------------------------------------
 
-    fn paint_page(&self, ctx: &egui::Context, painter: &egui::Painter, page: Rect, fade: f32) {
+    fn paint_page(
+        &self,
+        ctx: &egui::Context,
+        painter: &egui::Painter,
+        screen: Rect,
+        page: Rect,
+        fade: f32,
+    ) {
         let ink = self.stage.ink();
         let sheet = if self.stage.dark() {
             Color32::from_rgb(0x14, 0x16, 0x1c)
         } else {
             Color32::WHITE
         };
-        painter.rect_filled(page, 0.0, sheet.gamma_multiply(self.settings.page_opacity));
+        // The sheet is frosted glass: the scene behind it blurs in over the
+        // first part of the slider, then the glass whitens towards paper.
+        let amount = self.settings.page_opacity;
+        let frost = (amount * 2.5).min(1.0);
+        self.stage.paint_frost(painter, screen, page, frost);
+        let tint = (amount * amount).max(0.1 * frost);
+        painter.rect_filled(page, 0.0, sheet.gamma_multiply(tint));
         if fade <= 0.0 {
             return;
         }
@@ -1427,7 +1440,7 @@ impl SamadhiApp {
                             ui.add_space(14.0);
                             caption(ui, "Sheet", 11.0, p.ink.gamma_multiply(0.6), 0.0);
                             ui.add_space(6.0);
-                            if slider(ui, &mut self.settings.page_opacity, "Sheet opacity") {
+                            if slider(ui, &mut self.settings.page_opacity, "Frosted sheet") {
                                 self.settings_touched();
                             }
                         });
@@ -1919,7 +1932,7 @@ impl eframe::App for SamadhiApp {
             // About 30 fps is plenty for slow ambient motion.
             ctx.request_repaint_after(Duration::from_millis(33));
         }
-        self.paint_page(&ctx, ui.painter(), page, fade);
+        self.paint_page(&ctx, ui.painter(), screen, page, fade);
         if self.loading.is_some() {
             // Nothing to type into until the document arrives.
             self.loading_hint(&ctx, page);
@@ -2655,6 +2668,10 @@ mod ui_tests {
             .type_text(" More.");
         h.run_steps(30);
         save(&mut h, "ui-5-writing");
+        h.state_mut().settings.page_opacity = 0.3;
+        h.run_steps(3);
+        save(&mut h, "ui-7-frost");
+        h.state_mut().settings.page_opacity = 0.0;
         // Moving the mouse brings the faded interface back.
         h.hover_at(pos2(20.0, 20.0));
         h.run_steps(10);
@@ -2672,5 +2689,9 @@ mod ui_tests {
                 &format!("theme-{i}-{}", name.to_lowercase().replace(' ', "-")),
             );
         }
+        // The last theme has stars, which go soft behind the glass.
+        h.state_mut().settings.page_opacity = 0.3;
+        h.run_steps(3);
+        save(&mut h, "ui-7b-frost-particles");
     }
 }

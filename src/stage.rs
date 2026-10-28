@@ -10,8 +10,8 @@ use eframe::egui::{
     TextureWrapMode, Vec2, pos2, vec2,
 };
 
-use crate::background::cover_uv;
-use crate::scene::{Particles, Scene};
+use crate::background::{Prepared, cover_uv};
+use crate::scene::Particles;
 
 /// How far (in points) the nearest layer moves at the edge of the screen.
 const MAX_SHIFT: f32 = 34.0;
@@ -30,6 +30,8 @@ struct Mote {
 
 struct LiveLayer {
     texture: TextureHandle,
+    /// Blurred copy, drawn behind the frosted sheet.
+    frost: TextureHandle,
     depth: f32,
     drift: f32,
 }
@@ -50,6 +52,10 @@ pub struct Stage {
     started: Instant,
     last_frame: Instant,
     parallax: Vec2,
+    /// Animation clock and crossfade of the last frame, so the frosted
+    /// sheet lines up exactly with the scene painted under it.
+    clock: f32,
+    crossfade: f32,
 }
 
 impl std::fmt::Debug for Stage {
@@ -71,19 +77,23 @@ impl Default for Stage {
             started: now,
             last_frame: now,
             parallax: Vec2::ZERO,
+            clock: 0.0,
+            crossfade: 1.0,
         }
     }
 }
 
 impl Stage {
     /// Uploads a newly built scene and starts crossfading to it.
-    pub fn show(&mut self, ctx: &egui::Context, scene: Scene) {
+    pub fn show(&mut self, ctx: &egui::Context, prepared: Prepared) {
+        let Prepared { scene, frost } = prepared;
         let max_side = ctx.input(|i| i.max_texture_side);
         let layers = scene
             .layers
             .into_iter()
+            .zip(frost)
             .enumerate()
-            .map(|(i, layer)| {
+            .map(|(i, (layer, frost))| {
                 let options = TextureOptions {
                     wrap_mode: if layer.drift == 0.0 {
                         TextureWrapMode::ClampToEdge
@@ -98,6 +108,7 @@ impl Stage {
                         fit_texture(layer.image, max_side),
                         options,
                     ),
+                    frost: ctx.load_texture(format!("scene-frost-{i}"), frost, options),
                     depth: layer.depth,
                     drift: layer.drift,
                 }
@@ -163,6 +174,8 @@ impl Stage {
         let settling = (target - self.parallax).length() > 0.002;
 
         let fade = (now.duration_since(self.switched_at).as_secs_f32() / CROSSFADE_SECS).min(1.0);
+        self.clock = t;
+        self.crossfade = fade;
         if fade >= 1.0 {
             self.previous = None;
         }
@@ -181,6 +194,48 @@ impl Stage {
         }
         animated
     }
+}
+
+impl Stage {
+    /// Paints the scene behind `page` again, blurred, like frosted glass.
+    /// `amount` goes from 0 (clear) to 1 (fully frosted). Call after
+    /// [`Self::paint`] in the same frame.
+    pub fn paint_frost(&self, painter: &Painter, screen: Rect, page: Rect, amount: f32) {
+        if amount <= 0.0 {
+            return;
+        }
+        let glass = painter.with_clip_rect(page.intersect(painter.clip_rect()));
+        if let Some(previous) = &self.previous {
+            paint_frosted(&glass, screen, previous, self.parallax, self.clock, amount);
+        }
+        if let Some(current) = &self.current {
+            let alpha = amount * smooth(self.crossfade);
+            paint_frosted(&glass, screen, current, self.parallax, self.clock, alpha);
+        }
+    }
+}
+
+/// The blurred layers, placed exactly like the sharp ones, then the
+/// particles as soft, out-of-focus blurs.
+fn paint_frosted(painter: &Painter, screen: Rect, live: &Live, parallax: Vec2, t: f32, alpha: f32) {
+    let tint = Color32::WHITE.gamma_multiply(alpha);
+    for layer in &live.layers {
+        let (rect, uv) = placement(screen, layer, parallax, t);
+        painter.image(layer.frost.id(), rect, uv, tint);
+    }
+    paint_particles(painter, screen, live, parallax, t, alpha, true);
+}
+
+/// Where a layer is drawn this frame, and which part of its image.
+fn placement(screen: Rect, layer: &LiveLayer, parallax: Vec2, t: f32) -> (Rect, Rect) {
+    let shift = -parallax * layer.depth * MAX_SHIFT;
+    let margin = MAX_SHIFT * layer.depth + 2.0;
+    let rect = screen.expand(margin).translate(shift);
+    let mut uv = cover_uv(layer.texture.size_vec2(), rect.size());
+    if layer.drift != 0.0 {
+        uv = uv.translate(vec2(t * layer.drift, 0.0));
+    }
+    (rect, uv)
 }
 
 /// Downscales `image` if a side exceeds what the GPU supports (often 2048
@@ -215,18 +270,10 @@ fn smooth(t: f32) -> f32 {
 fn paint_live(painter: &Painter, screen: Rect, live: &Live, parallax: Vec2, t: f32, alpha: f32) {
     let tint = Color32::WHITE.gamma_multiply(alpha);
     for layer in &live.layers {
-        let shift = -parallax * layer.depth * MAX_SHIFT;
-        let margin = MAX_SHIFT * layer.depth + 2.0;
-        let rect = screen.expand(margin).translate(shift);
-        let mut uv = cover_uv(layer.texture.size_vec2(), rect.size());
-        if layer.drift != 0.0 {
-            uv = uv.translate(vec2(t * layer.drift, 0.0));
-        }
+        let (rect, uv) = placement(screen, layer, parallax, t);
         painter.image(layer.texture.id(), rect, uv, tint);
     }
-    if let Some(kind) = live.particles {
-        paint_particles(painter, screen, kind, &live.motes, parallax, t, alpha);
-    }
+    paint_particles(painter, screen, live, parallax, t, alpha, false);
 }
 
 /// Deterministic pseudo-random motes for a particle kind.
@@ -266,12 +313,24 @@ fn motes(kind: Particles) -> Vec<Mote> {
 fn paint_particles(
     painter: &Painter,
     screen: Rect,
-    kind: Particles,
-    motes: &[Mote],
+    live: &Live,
     parallax: Vec2,
     t: f32,
     alpha: f32,
+    soft: bool,
 ) {
+    let Some(kind) = live.particles else {
+        return;
+    };
+    // Behind the frosted sheet, each mote is a wide, faint, out-of-focus
+    // glow instead of a sharp dot.
+    let dot = |p: Pos2, r: f32, color: Color32| {
+        if soft {
+            soft_dot(painter, p, (r + 1.5) * 3.0, color.gamma_multiply(0.35));
+        } else {
+            painter.circle_filled(p, r, color);
+        }
+    };
     let at = |x: f32, y: f32, depth: f32| {
         let shift = -parallax * (0.3 + depth * 0.7) * MAX_SHIFT;
         pos2(
@@ -279,7 +338,7 @@ fn paint_particles(
             screen.top() + y * screen.height(),
         ) + shift
     };
-    for m in motes {
+    for m in &live.motes {
         match kind {
             Particles::Snow => {
                 let fall = 0.012 + 0.03 * m.depth;
@@ -287,13 +346,13 @@ fn paint_particles(
                 let x = (m.x + 0.012 * (t * 0.35 * m.speed + m.phase).sin() + t * 0.003).fract();
                 let r = 0.8 + 2.4 * m.depth;
                 let a = (0.35 + 0.5 * m.depth) * alpha;
-                painter.circle_filled(at(x, y, m.depth), r, Color32::WHITE.gamma_multiply(a));
+                dot(at(x, y, m.depth), r, Color32::WHITE.gamma_multiply(a));
             }
             Particles::Stars => {
                 let twinkle = 0.5 + 0.5 * (t * 1.7 * m.speed + m.phase).sin();
                 let a = (0.25 + 0.6 * twinkle * (0.4 + 0.6 * m.depth)) * alpha;
                 let r = 0.5 + 1.1 * m.depth * m.depth;
-                painter.circle_filled(
+                dot(
                     at(m.x, m.y, 0.0),
                     r,
                     Color32::from_rgb(0xf4, 0xf1, 0xe6).gamma_multiply(a),
@@ -305,12 +364,12 @@ fn paint_particles(
                 let pulse = (0.5 + 0.5 * (t * 0.9 * m.speed + m.phase).sin()).powi(2);
                 let p = at(x, y, m.depth);
                 let glow = Color32::from_rgb(0xe9, 0xf2, 0xa2);
-                painter.circle_filled(
+                dot(
                     p,
                     7.0 + 5.0 * m.depth,
                     glow.gamma_multiply(0.08 * pulse * alpha),
                 );
-                painter.circle_filled(
+                dot(
                     p,
                     1.2 + 1.0 * m.depth,
                     glow.gamma_multiply((0.25 + 0.7 * pulse) * alpha),
@@ -320,7 +379,7 @@ fn paint_particles(
                 let x = (m.x + t * 0.004 * m.speed).fract();
                 let y = m.y + 0.012 * (t * 0.2 * m.speed + m.phase).sin();
                 let a = (0.15 + 0.25 * m.depth) * alpha;
-                painter.circle_filled(
+                dot(
                     at(x, y, m.depth),
                     0.8 + 1.4 * m.depth,
                     Color32::WHITE.gamma_multiply(a),
@@ -328,6 +387,22 @@ fn paint_particles(
             }
         }
     }
+}
+
+/// A round glow fading from `color` at the centre to nothing at `radius`.
+fn soft_dot(painter: &Painter, center: Pos2, radius: f32, color: Color32) {
+    const SEGMENTS: u32 = 16;
+    let mut mesh = Mesh::default();
+    mesh.colored_vertex(center, color);
+    for i in 0..SEGMENTS {
+        let angle = TAU * i as f32 / SEGMENTS as f32;
+        mesh.colored_vertex(
+            center + radius * vec2(angle.cos(), angle.sin()),
+            Color32::TRANSPARENT,
+        );
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % SEGMENTS);
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Darkens the edges of the screen, more so while writing, drawing the eye

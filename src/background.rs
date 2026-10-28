@@ -98,7 +98,25 @@ pub fn thumbnails(
     rx
 }
 
-type LoadResult = (u64, String, anyhow::Result<Scene>);
+/// A scene ready to show, with a frosted copy of each layer for the sheet.
+#[derive(Debug)]
+pub struct Prepared {
+    pub scene: Scene,
+    pub frost: Vec<ColorImage>,
+}
+
+impl Prepared {
+    fn new(scene: Scene) -> Self {
+        let frost = scene
+            .layers
+            .iter()
+            .map(|l| crate::frost::frost(&l.image, l.drift != 0.0))
+            .collect();
+        Self { scene, frost }
+    }
+}
+
+type LoadResult = (u64, String, anyhow::Result<Prepared>);
 
 /// Builds scenes on worker threads; only the most recent request wins, so
 /// flicking quickly through themes never shows a stale one.
@@ -135,7 +153,8 @@ impl SceneLoader {
                 let result = match source {
                     catalog::Source::Builtin(kind) => Ok(kind.build()),
                     catalog::Source::File(path) => load_image(&path).map(scene::from_image),
-                };
+                }
+                .map(Prepared::new);
                 // The receiver only disappears when the app is closing.
                 let _ = tx.send((generation, name, result));
                 ctx.request_repaint();
@@ -144,7 +163,7 @@ impl SceneLoader {
     }
 
     /// Returns the result of the latest request once it is ready.
-    pub fn poll(&mut self) -> Option<(String, anyhow::Result<Scene>)> {
+    pub fn poll(&mut self) -> Option<(String, anyhow::Result<Prepared>)> {
         let mut latest = None;
         while let Ok((generation, name, result)) = self.rx.try_recv() {
             if generation == self.generation {

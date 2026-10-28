@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod desktop;
 pub mod document;
 pub mod fonts;
+pub mod frost;
 pub mod icons;
 #[cfg(unix)]
 pub mod instance;

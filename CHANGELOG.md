@@ -7,6 +7,9 @@ becomes its notes on GitHub.
 
 - **Recent files:** hovering the open button lists the last eight files
   you opened, newest first; click one to reopen it.
+- **Frosted sheet:** the sheet behind the text is now frosted glass. The
+  slider blurs the scene behind the page in, then whitens it towards
+  paper. Snow, stars and other motes turn into soft glows behind it.
 
 ## 0.2.0
 
