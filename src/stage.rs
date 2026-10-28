@@ -447,4 +447,175 @@ mod tests {
         let small = ColorImage::new([10, 10], vec![Color32::WHITE; 100]);
         assert_eq!(fit_texture(small, 2048).size, [10, 10]);
     }
+
+    fn prepared(gray: u8, particles: Option<Particles>) -> Prepared {
+        let mut scene =
+            crate::scene::from_image(ColorImage::new([8, 4], vec![Color32::from_gray(gray); 32]));
+        scene.particles = particles;
+        let frost = scene
+            .layers
+            .iter()
+            .map(|l| crate::frost::frost(&l.image, l.drift != 0.0))
+            .collect();
+        Prepared { scene, frost }
+    }
+
+    fn screen() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))
+    }
+
+    /// Runs one frame, painting the stage, and returns its result and the
+    /// number of shapes drawn.
+    fn frame(
+        ctx: &egui::Context,
+        stage: &mut Stage,
+        draw: impl Fn(&mut Stage, &Painter) -> bool,
+    ) -> (bool, usize) {
+        let mut animated = false;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            animated = draw(stage, ui.painter());
+        });
+        output.textures_delta.clear();
+        (animated, output.shapes.len())
+    }
+
+    #[test]
+    fn an_empty_stage_paints_a_plain_backdrop() {
+        let ctx = egui::Context::default();
+        let mut stage = Stage::default();
+        assert!(!stage.is_loaded());
+        assert!(!stage.dark());
+        assert_eq!(stage.ink(), Color32::from_rgb(0x2b, 0x2b, 0x2b));
+        assert!(format!("{stage:?}").contains("loaded: false"));
+        let (_, baseline) = frame(&ctx, &mut stage, |_, _| false);
+        stage.switched_at = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap_or(stage.switched_at);
+        let (animated, shapes) = frame(&ctx, &mut stage, |s, p| {
+            s.paint(p, screen(), None, false, 0.0)
+        });
+        assert!(!animated, "nothing moves without a scene or motion");
+        assert_eq!(shapes, baseline + 1);
+    }
+
+    #[test]
+    fn showing_a_scene_crossfades_to_it() {
+        let ctx = egui::Context::default();
+        let mut stage = Stage::default();
+        stage.show(&ctx, prepared(10, None));
+        assert!(stage.is_loaded());
+        assert!(stage.dark(), "a dark image gets light ink");
+        assert_ne!(stage.ink(), Color32::from_rgb(0x2b, 0x2b, 0x2b));
+        let (animated, _) = frame(&ctx, &mut stage, |s, p| {
+            s.paint(p, screen(), Some(pos2(5.0, 5.0)), true, 1.0)
+        });
+        assert!(animated, "the crossfade has only just started");
+
+        stage.show(&ctx, prepared(240, Some(Particles::Snow)));
+        assert!(!stage.dark());
+        assert!(stage.previous.is_some(), "the old scene fades out");
+    }
+
+    #[test]
+    fn frost_is_drawn_only_when_asked_for() {
+        let ctx = egui::Context::default();
+        let mut stage = Stage::default();
+        stage.show(&ctx, prepared(120, Some(Particles::Fireflies)));
+        let page = Rect::from_min_size(pos2(100.0, 100.0), vec2(300.0, 200.0));
+        let (_, baseline) = frame(&ctx, &mut stage, |_, _| false);
+        let (_, none) = frame(&ctx, &mut stage, |s, p| {
+            s.paint_frost(p, screen(), page, 0.0);
+            false
+        });
+        assert_eq!(none, baseline);
+        let (_, some) = frame(&ctx, &mut stage, |s, p| {
+            s.paint(p, screen(), None, true, 0.5);
+            s.paint_frost(p, screen(), page, 1.0);
+            false
+        });
+        assert!(some > baseline + 1);
+    }
+
+    #[test]
+    fn every_particle_kind_paints_without_trouble() {
+        let ctx = egui::Context::default();
+        for kind in [
+            Particles::Snow,
+            Particles::Stars,
+            Particles::Fireflies,
+            Particles::Dust,
+        ] {
+            let mut stage = Stage::default();
+            stage.show(&ctx, prepared(60, Some(kind)));
+            for motion in [true, false] {
+                let (animated, _) = frame(&ctx, &mut stage, |s, p| {
+                    let a = s.paint(p, screen(), Some(pos2(-50.0, 900.0)), motion, 0.3);
+                    s.paint_frost(p, screen(), screen(), 0.8);
+                    a
+                });
+                assert!(animated, "{kind:?}: the crossfade is still running");
+            }
+        }
+    }
+
+    #[test]
+    fn motes_are_deterministic_and_on_screen() {
+        for kind in [
+            Particles::Snow,
+            Particles::Stars,
+            Particles::Fireflies,
+            Particles::Dust,
+        ] {
+            let a = motes(kind);
+            let b = motes(kind);
+            assert!(!a.is_empty());
+            assert_eq!(a.len(), b.len());
+            for (m, n) in a.iter().zip(&b) {
+                assert_eq!((m.x, m.y, m.depth), (n.x, n.y, n.depth));
+                assert!(
+                    (0.0..=1.0).contains(&m.x) && (0.0..=1.0).contains(&m.y),
+                    "{kind:?}"
+                );
+                assert!((0.0..=1.0).contains(&m.depth));
+                assert!(m.speed >= 0.5 && m.speed <= 1.5);
+            }
+        }
+        // Stars stay in the sky, fireflies near the ground.
+        assert!(motes(Particles::Stars).iter().all(|m| m.y <= 0.6));
+        assert!(motes(Particles::Fireflies).iter().all(|m| m.y >= 0.55));
+    }
+
+    #[test]
+    fn smoothstep_eases_from_zero_to_one() {
+        assert!(smooth(0.0).abs() < f32::EPSILON);
+        assert!((smooth(1.0) - 1.0).abs() < f32::EPSILON);
+        assert!((smooth(0.5) - 0.5).abs() < f32::EPSILON);
+        let mut last = 0.0;
+        for i in 1..=100 {
+            let v = smooth(i as f32 / 100.0);
+            assert!(v >= last);
+            last = v;
+        }
+    }
+
+    #[test]
+    fn layers_cover_the_screen_with_room_to_move() {
+        let ctx = egui::Context::default();
+        let texture = ctx.load_texture(
+            "t",
+            ColorImage::new([200, 100], vec![Color32::WHITE; 20_000]),
+            TextureOptions::LINEAR,
+        );
+        let layer = LiveLayer {
+            texture: texture.clone(),
+            frost: texture,
+            depth: 1.0,
+            drift: 0.0,
+        };
+        for parallax in [Vec2::ZERO, vec2(1.0, -1.0), vec2(-1.0, 1.0)] {
+            let (rect, uv) = placement(screen(), &layer, parallax, 3.0);
+            assert!(rect.contains_rect(screen()), "{parallax:?}: {rect:?}");
+            assert!(uv.min.x >= 0.0 && uv.max.x <= 1.0);
+        }
+    }
 }

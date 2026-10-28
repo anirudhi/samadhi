@@ -121,6 +121,14 @@ impl Document {
         })
     }
 
+    /// Whether a file looking like this (size and modification time, cheap
+    /// to read off the interface thread) is the one last read or written.
+    /// When it isn't, [`Self::changed_on_disk`] reads it to tell.
+    pub fn disk_matches(&self, meta: &fs::Metadata) -> bool {
+        self.disk
+            .is_some_and(|seen| meta.len() == seen.len && meta.modified().ok() == seen.modified)
+    }
+
     /// The version of the file now on disk, if something else has changed
     /// it since this document last read or wrote it: another app, or a sync
     /// from another device. Each change is reported once.
@@ -128,7 +136,7 @@ impl Document {
         let path = self.path.as_deref()?;
         let seen = self.disk?;
         let meta = fs::metadata(path).ok()?;
-        if meta.len() == seen.len && meta.modified().ok() == seen.modified {
+        if self.disk_matches(&meta) {
             return None;
         }
         let bytes = fs::read(path).ok()?;
@@ -276,11 +284,13 @@ fn decode(bytes: &[u8]) -> anyhow::Result<(String, TextEncoding)> {
         };
         return Ok((text, enc));
     }
-    if bytes.contains(&0) {
-        bail!("this does not look like a plain-text document");
-    }
+    // Valid UTF-8 is text, even with the odd NUL in it (pasted from
+    // somewhere), so whatever Samādhi saved it can always open again.
     if let Ok(text) = std::str::from_utf8(bytes) {
         return Ok((text.to_owned(), TextEncoding::Utf8 { bom: false }));
+    }
+    if bytes.contains(&0) {
+        bail!("this does not look like a plain-text document");
     }
     let (text, _) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(bytes);
     Ok((text.into_owned(), TextEncoding::Windows1252))
@@ -528,6 +538,9 @@ mod tests {
         // Rewriting the same bytes (as sync tools do) is not a change.
         fs::write(&path, "theirs, from another device").unwrap();
         assert!(doc.changed_on_disk().is_none());
+        assert!(doc.disk_matches(&fs::metadata(&path).unwrap()));
+        fs::write(&path, "a third version").unwrap();
+        assert!(!doc.disk_matches(&fs::metadata(&path).unwrap()));
     }
 
     #[test]

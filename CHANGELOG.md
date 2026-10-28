@@ -10,6 +10,26 @@ becomes its notes on GitHub.
 - **Frosted sheet:** the sheet behind the text is now frosted glass. The
   slider blurs the scene behind the page in, then whitens it towards
   paper. Snow, stars and other motes turn into soft glows behind it.
+- **No more freezes from files or dialogs:** the open and save dialogs no
+  longer block the app, and are attached to its window so they can't open
+  hidden behind it. Files open, and the check for changes from other
+  computers runs, off the interface thread, so a slow drive can't stall
+  typing.
+- **Faster with long documents:** the styled text and word count are only
+  rebuilt when something changes, and spelling underlines are only worked
+  out for the visible part of the page. Idle frames on a 40,000-word
+  document are about three times quicker.
+- **A log, and a watchdog:** Samādhi now keeps a log file (`samadhi
+  --help` shows where), noting errors and any moment the interface stops
+  responding, with what it was doing.
+- **Fixed** (found by new fuzz tests):
+  - A crash when deleting a word right after the document changed on
+    another computer.
+  - Undo could bring back the previous document's text.
+  - A crash when resizing the page in a very small window.
+  - A document containing a NUL character couldn't be reopened.
+  - A hand-edited extension like `. md` kept a space in new file names.
+  - A crash-recovered draft lost spaces at the ends of its file's name.
 
 ## 0.2.0
 

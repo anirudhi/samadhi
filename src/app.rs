@@ -30,6 +30,7 @@ use crate::spell::SpellChecker;
 use crate::stage::Stage;
 use crate::theme;
 use crate::timer::{self, Timer};
+use crate::watchdog::{Phase, Watchdog};
 use crate::widgets::{
     ICON_BUTTON, caption, icon_button, icon_button_bare, list_choice, slider, switch, text_choice,
     thumb_button,
@@ -103,6 +104,25 @@ struct SpellMenu {
     suggestions: Vec<String>,
 }
 
+/// A file dialog: asked for during a frame, then opened at its end, where
+/// the window it belongs to is at hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DialogKind {
+    Open,
+    /// Save under a new name, then carry on with `then` (say, quitting).
+    SaveAs {
+        then: Option<Pending>,
+    },
+}
+
+/// An open file dialog. It runs on a worker thread so the app keeps
+/// drawing (and the dialog can never freeze it); the choice arrives here.
+#[derive(Debug)]
+struct Dialog {
+    kind: DialogKind,
+    rx: mpsc::Receiver<Option<PathBuf>>,
+}
+
 #[derive(Debug)]
 struct Loading {
     path: PathBuf,
@@ -110,6 +130,41 @@ struct Loading {
     requested: bool,
     since: Instant,
     rx: mpsc::Receiver<anyhow::Result<Document>>,
+}
+
+/// A misspelled word, as byte offsets (for the text) and character
+/// offsets (for the editor's layout).
+#[derive(Debug, Clone)]
+struct Misspelling {
+    bytes: Range<usize>,
+    chars: Range<usize>,
+}
+
+/// Pairs each byte range (in order, not overlapping) with its character
+/// range, in one pass over the text.
+fn with_char_offsets(text: &str, ranges: Vec<Range<usize>>) -> Vec<Misspelling> {
+    let (mut byte, mut chars) = (0, 0);
+    let mut char_at = |to: usize| {
+        // Never backwards, and always on a character boundary.
+        let mut to = to.clamp(byte, text.len());
+        while !text.is_char_boundary(to) {
+            to += 1;
+        }
+        chars += text[byte..to].chars().count();
+        byte = to;
+        chars
+    };
+    ranges
+        .into_iter()
+        .map(|bytes| {
+            let start = char_at(bytes.start);
+            let end = char_at(bytes.end);
+            Misspelling {
+                bytes,
+                chars: start..end,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -134,6 +189,11 @@ pub struct Options {
     /// Requests from later launches of the app (see [`crate::instance`]).
     #[cfg(unix)]
     pub messages: Option<mpsc::Receiver<crate::instance::Message>>,
+    /// Show real file dialogs. Tests turn this off and answer requests
+    /// themselves.
+    pub file_dialogs: bool,
+    /// Watches for freezes (see [`crate::watchdog`]).
+    pub watchdog: Watchdog,
 }
 
 impl Default for Options {
@@ -146,10 +206,13 @@ impl Default for Options {
             audio: true,
             #[cfg(unix)]
             messages: None,
+            file_dialogs: true,
+            watchdog: Watchdog::new(),
         }
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent bits of interface state
 pub struct SamadhiApp {
     settings: Settings,
     settings_path: Option<PathBuf>,
@@ -163,10 +226,18 @@ pub struct SamadhiApp {
     /// An action waiting for the user to decide about an unsaved draft.
     pending: Option<Pending>,
     last_disk_check: Instant,
+    /// A look at the open file's size and time, taken on a worker thread so
+    /// a stalled (network) drive can never freeze the interface.
+    disk_probe: Option<mpsc::Receiver<(PathBuf, std::io::Result<std::fs::Metadata>)>>,
     /// The document being read at start-up, off the interface thread so a
     /// slow disk (say, a network drive just after boot) never holds up the
     /// window. Its file, whether it was asked for explicitly, and the result.
     loading: Option<Loading>,
+    /// A file dialog asked for this frame, and the one currently open.
+    dialog_request: Option<DialogKind>,
+    dialog: Option<Dialog>,
+    file_dialogs: bool,
+    watchdog: Watchdog,
     #[cfg(unix)]
     messages: Option<mpsc::Receiver<crate::instance::Message>>,
     timer: Timer,
@@ -201,10 +272,17 @@ pub struct SamadhiApp {
     spell: Option<SpellChecker>,
     spell_rx: Option<mpsc::Receiver<anyhow::Result<SpellChecker>>>,
     /// Misspelled ranges for the text with this hash.
-    spell_cache: Option<(u64, Vec<Range<usize>>)>,
+    spell_cache: Option<(u64, Vec<Misspelling>)>,
     /// Bumped when the personal dictionary or ignore list changes.
     spell_generation: u64,
     spell_menu: Option<SpellMenu>,
+    /// The document was swapped for another (opened, new, reloaded): the
+    /// editor's undo history belongs to the old one.
+    new_text: bool,
+    /// The editor's laid-out text and what it was made from.
+    layout_cache: Option<(u64, std::sync::Arc<egui::Galley>)>,
+    /// The document's word count and the text it was counted from.
+    word_cache: std::cell::Cell<Option<(u64, usize)>>,
 
     allow_close: bool,
     last_title: String,
@@ -271,7 +349,12 @@ impl SamadhiApp {
             recovery: Recovery::new(options.recovery_dir.clone()),
             pending: None,
             last_disk_check: Instant::now(),
+            disk_probe: None,
             loading: None,
+            dialog_request: None,
+            dialog: None,
+            file_dialogs: options.file_dialogs,
+            watchdog: options.watchdog.clone(),
             #[cfg(unix)]
             messages: options.messages,
             timer,
@@ -297,6 +380,9 @@ impl SamadhiApp {
             spell_cache: None,
             spell_generation: 0,
             spell_menu: None,
+            new_text: false,
+            layout_cache: None,
+            word_cache: std::cell::Cell::new(None),
             allow_close: false,
             last_title: String::new(),
             last_fullscreen_request: None,
@@ -498,18 +584,18 @@ impl SamadhiApp {
     /// Misspelled ranges in `text`, recomputed only when the text (or the
     /// personal dictionary) changes.
     fn misspellings<'a>(
-        cache: &'a mut Option<(u64, Vec<Range<usize>>)>,
+        cache: &'a mut Option<(u64, Vec<Misspelling>)>,
         checker: &SpellChecker,
         generation: u64,
         text: &str,
-    ) -> &'a [Range<usize>] {
+    ) -> &'a [Misspelling] {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         text.hash(&mut hasher);
         generation.hash(&mut hasher);
         let key = hasher.finish();
         if cache.as_ref().is_none_or(|(k, _)| *k != key) {
-            *cache = Some((key, checker.misspellings(text)));
+            *cache = Some((key, with_char_offsets(text, checker.misspellings(text))));
         }
         cache.as_ref().map_or(&[], |(_, r)| r.as_slice())
     }
@@ -562,7 +648,7 @@ impl SamadhiApp {
 
     // ----- documents --------------------------------------------------------
 
-    fn file_dialog(&self) -> rfd::FileDialog {
+    fn file_dialog(&self) -> rfd::AsyncFileDialog {
         // Next to the current file, else in the documents folder (made on
         // first use), else the home folder.
         let documents = self.settings.documents_dir();
@@ -573,7 +659,7 @@ impl SamadhiApp {
             .map(Path::to_path_buf)
             .or_else(|| std::fs::create_dir_all(&documents).ok().map(|()| documents))
             .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()));
-        let mut dialog = rfd::FileDialog::new();
+        let mut dialog = rfd::AsyncFileDialog::new();
         // macOS merges the filters into one list of allowed extensions,
         // where "*" matches nothing: any other text file (and the name
         // typed when saving) would be refused. Opening checks the contents
@@ -606,17 +692,91 @@ impl SamadhiApp {
         });
     }
 
-    fn finish_loading(&mut self, result: anyhow::Result<Document>, requested: bool) {
+    fn finish_loading(&mut self, path: &Path, result: anyhow::Result<Document>, requested: bool) {
         match result {
             Ok(doc) => {
                 self.doc = doc;
+                self.new_text = true;
                 self.recovery.clear();
                 self.remember_file();
             }
-            // A last file that has gone (moved or deleted elsewhere) just
-            // means starting fresh.
-            Err(err) if requested => self.set_status(format!("{err:#}"), true),
-            Err(err) => log::info!("not reopening the last file: {err:#}"),
+            Err(err) => {
+                // A file that has gone (moved or deleted elsewhere) leaves
+                // the recent list; the last file just means starting fresh.
+                if self.settings.recent_files.iter().any(|p| p == path) {
+                    self.settings.recent_files.retain(|p| p != path);
+                    self.settings_touched();
+                }
+                if requested {
+                    self.set_status(format!("{err:#}"), true);
+                } else {
+                    log::info!("not reopening the last file: {err:#}");
+                }
+            }
+        }
+    }
+
+    /// Settles the current document, then opens `path` without holding up
+    /// the interface (it may be on a slow or network drive).
+    fn open_in_background(&mut self, ctx: &egui::Context, path: PathBuf) {
+        self.checkpoint();
+        self.load_in_background(ctx, path, true);
+    }
+
+    /// Asks for a file dialog; it opens at the end of this frame. Only one
+    /// is open at a time.
+    fn ask(&mut self, kind: DialogKind) {
+        if self.dialog.is_none() {
+            self.dialog_request = Some(kind);
+        }
+    }
+
+    /// Opens the requested dialog on top of the app's window, waiting for
+    /// the choice on a worker thread.
+    fn show_requested_dialog(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if !self.file_dialogs || self.dialog.is_some() {
+            return;
+        }
+        let Some(kind) = self.dialog_request.take() else {
+            return;
+        };
+        // Attached to our window, the dialog can't open hidden behind it.
+        let builder = self.file_dialog().set_parent(frame);
+        let choice: std::pin::Pin<Box<dyn Future<Output = Option<rfd::FileHandle>> + Send>> =
+            match &kind {
+                DialogKind::Open => Box::pin(builder.pick_file()),
+                DialogKind::SaveAs { .. } => {
+                    let name = self.save_as_name();
+                    Box::pin(builder.set_file_name(name).save_file())
+                }
+            };
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::Builder::new()
+            .name("file-dialog".into())
+            .spawn(move || {
+                let path = pollster::block_on(choice).map(|h| h.path().to_path_buf());
+                let _ = tx.send(path);
+                ctx.request_repaint();
+            })
+            .expect("spawning a thread should not fail");
+        self.dialog = Some(Dialog { kind, rx });
+    }
+
+    /// Acts on the choice made in a file dialog (`None`: cancelled).
+    fn dialog_answered(&mut self, ctx: &egui::Context, kind: DialogKind, path: Option<PathBuf>) {
+        let Some(path) = path else {
+            return;
+        };
+        match kind {
+            DialogKind::Open => self.open_in_background(ctx, path),
+            DialogKind::SaveAs { then } => {
+                if self.save_to(path)
+                    && let Some(action) = then
+                {
+                    self.perform(ctx, action);
+                }
+            }
         }
     }
 
@@ -646,29 +806,8 @@ impl SamadhiApp {
         }
     }
 
-    /// Opens `path` (the current document should be settled first).
-    /// Returns whether it opened.
-    fn open_path(&mut self, path: &Path) -> bool {
-        self.loading = None;
-        self.checkpoint();
-        match Document::open(path) {
-            Ok(doc) => {
-                self.doc = doc;
-                self.recovery.clear();
-                self.remember_file();
-                true
-            }
-            Err(err) => {
-                self.set_status(format!("{err:#}"), true);
-                false
-            }
-        }
-    }
-
     fn open_with_dialog(&mut self) {
-        if let Some(path) = self.file_dialog().pick_file() {
-            self.open_path(&path);
-        }
+        self.ask(DialogKind::Open);
     }
 
     /// Starts a fresh, unsaved draft.
@@ -676,6 +815,7 @@ impl SamadhiApp {
         self.loading = None;
         self.checkpoint();
         self.doc = Document::default();
+        self.new_text = true;
         self.recovery.clear();
         self.last_edit = None;
     }
@@ -691,6 +831,7 @@ impl SamadhiApp {
             _ => Document::default(),
         };
         self.doc.text = draft.text;
+        self.new_text = true;
         self.doc.mark_dirty();
         let message = match self.doc.path() {
             Some(_) => format!("Recovered unsaved changes to {}", self.doc.display_name()),
@@ -753,6 +894,7 @@ impl SamadhiApp {
         };
         if !self.doc.is_dirty() {
             self.doc = theirs;
+            self.new_text = true;
             self.last_edit = None;
             self.set_status("Updated with changes made elsewhere", false);
             return;
@@ -770,6 +912,44 @@ impl SamadhiApp {
         if let Some(message) = self.report(result) {
             self.set_status(message, false);
         }
+    }
+
+    /// Every few seconds, checks off the interface thread whether the open
+    /// file was changed elsewhere; only then is it read (see
+    /// [`Self::sync_with_disk`]).
+    fn probe_disk(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.doc.path().map(Path::to_path_buf) else {
+            self.disk_probe = None;
+            return;
+        };
+        if let Some(rx) = &self.disk_probe {
+            match rx.try_recv() {
+                Ok((probed, meta)) => {
+                    self.disk_probe = None;
+                    let changed = meta.is_ok_and(|m| !self.doc.disk_matches(&m));
+                    if probed == path && changed {
+                        self.sync_with_disk();
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => return, // still looking
+                Err(mpsc::TryRecvError::Disconnected) => self.disk_probe = None,
+            }
+        }
+        if self.last_disk_check.elapsed() >= DISK_CHECK {
+            self.last_disk_check = Instant::now();
+            let (tx, rx) = mpsc::channel();
+            let ctx = ctx.clone();
+            std::thread::Builder::new()
+                .name("disk-probe".into())
+                .spawn(move || {
+                    let meta = std::fs::metadata(&path);
+                    let _ = tx.send((path, meta));
+                    ctx.request_repaint();
+                })
+                .expect("spawning a thread should not fail");
+            self.disk_probe = Some(rx);
+        }
+        ctx.request_repaint_after(DISK_CHECK);
     }
 
     /// Writes a saved document to its file. Returns whether it worked.
@@ -802,17 +982,24 @@ impl SamadhiApp {
         }
     }
 
-    /// Asks for a name and location, saves there, and keeps autosaving
-    /// there. Returns whether the document was saved.
-    fn save_as(&mut self) -> bool {
-        let ext = self.settings.default_extension.clone();
-        let name = match self.doc.path().and_then(Path::file_name) {
+    /// Asks for a name and location; the document is then saved there and
+    /// keeps autosaving there.
+    fn save_as(&mut self) {
+        self.ask(DialogKind::SaveAs { then: None });
+    }
+
+    /// The name the save dialog suggests.
+    fn save_as_name(&self) -> String {
+        match self.doc.path().and_then(Path::file_name) {
             Some(n) => n.to_string_lossy().into_owned(),
-            None => suggested_file_name(&self.doc.text, &ext),
-        };
-        let Some(mut path) = self.file_dialog().set_file_name(name).save_file() else {
-            return false;
-        };
+            None => suggested_file_name(&self.doc.text, &self.settings.default_extension),
+        }
+    }
+
+    /// Saves to `path` (from the save dialog) and keeps autosaving there.
+    /// Returns whether it worked.
+    fn save_to(&mut self, mut path: PathBuf) -> bool {
+        let ext = self.settings.default_extension.clone();
         if path.extension().is_none() {
             path.set_extension(&ext);
         }
@@ -857,9 +1044,7 @@ impl SamadhiApp {
             Pending::Quit => self.quit(ctx),
             Pending::Open => self.open_with_dialog(),
             Pending::New => self.new_document(),
-            Pending::OpenFile(path) => {
-                self.open_path(&path);
-            }
+            Pending::OpenFile(path) => self.open_in_background(ctx, path),
         }
     }
 
@@ -917,13 +1102,12 @@ impl SamadhiApp {
         match choice {
             Some(true) => {
                 self.pending = None;
-                if self.save_as() {
-                    self.perform(ctx, action);
-                }
+                self.ask(DialogKind::SaveAs { then: Some(action) });
             }
             Some(false) => {
                 self.pending = None;
                 self.doc = Document::default();
+                self.new_text = true;
                 self.recovery.clear();
                 self.last_edit = None;
                 self.perform(ctx, action);
@@ -938,9 +1122,27 @@ impl SamadhiApp {
         if let Some(loading) = &self.loading
             && let Ok(result) = loading.rx.try_recv()
         {
-            let requested = loading.requested;
-            self.loading = None;
-            self.finish_loading(result, requested);
+            let Some(Loading {
+                path, requested, ..
+            }) = self.loading.take()
+            else {
+                unreachable!("checked above");
+            };
+            self.finish_loading(&path, result, requested);
+        }
+        if let Some(dialog) = &self.dialog {
+            match dialog.rx.try_recv() {
+                Ok(path) => {
+                    let Some(Dialog { kind, .. }) = self.dialog.take() else {
+                        unreachable!("checked above");
+                    };
+                    self.dialog_answered(ctx, kind, path);
+                }
+                // The dialog thread is gone without an answer: treat it as
+                // cancelled rather than waiting forever.
+                Err(mpsc::TryRecvError::Disconnected) => self.dialog = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
         }
         if let Some(rx) = &self.thumbs_rx {
             while let Ok((i, image)) = rx.try_recv() {
@@ -1159,11 +1361,34 @@ impl SamadhiApp {
         };
         let enabled = self.settings.markdown;
         let editor_id = editor_id();
+        settle_editor(
+            ui.ctx(),
+            editor_id,
+            &self.doc.text,
+            std::mem::take(&mut self.new_text),
+        );
         let active = Self::cursor_line(ui.ctx(), editor_id, &self.doc.text);
+        let family = self.settings.font_family.clone();
+        let cache = &mut self.layout_cache;
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+            // Styling a long document takes a while, so the laid-out text is
+            // kept until the text, the line being edited or the look change.
+            let key = layout_key(
+                text.as_str(),
+                active.as_ref(),
+                (enabled, family.as_deref(), look.size, look.ink, look.accent),
+                wrap_width,
+            );
+            if let Some((k, galley)) = cache.as_ref()
+                && *k == key
+            {
+                return galley.clone();
+            }
             let mut job = markdown::layout(text.as_str(), &look, enabled, active.as_ref());
             job.wrap.max_width = wrap_width;
-            ui.ctx().fonts_mut(|f| f.layout_job(job))
+            let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
+            *cache = Some((key, galley.clone()));
+            galley
         };
         let ink = look.ink;
         let squiggle = if self.stage.dark() {
@@ -1200,15 +1425,30 @@ impl SamadhiApp {
                                 self.spell_generation,
                                 text,
                             );
-                            let cursor = output
-                                .cursor_range
-                                .map(|c| byte_of_char(text, c.primary.index.0));
-                            for range in ranges {
+                            let cursor = output.cursor_range.map(|c| c.primary.index.0);
+                            // Only the words on screen (a long document can
+                            // have thousands).
+                            let clip = ui.clip_rect().translate(-output.galley_pos.to_vec2());
+                            let first = output
+                                .galley
+                                .cursor_from_pos(clip.left_top().to_vec2())
+                                .index
+                                .0;
+                            let last = output
+                                .galley
+                                .cursor_from_pos(clip.right_bottom().to_vec2())
+                                .index
+                                .0;
+                            for m in ranges
+                                .iter()
+                                .filter(|m| m.chars.end >= first && m.chars.start <= last)
+                            {
                                 // Don't nag about the word still being typed.
                                 let typing_here = typing_recently
-                                    && cursor.is_some_and(|b| range.start <= b && b <= range.end);
+                                    && cursor
+                                        .is_some_and(|c| m.chars.start <= c && c <= m.chars.end);
                                 if !typing_here {
-                                    paint_squiggle(ui, &output, text, range, squiggle);
+                                    paint_squiggle(ui, &output, &m.chars, squiggle);
                                 }
                             }
                             if output.response.secondary_clicked()
@@ -1219,6 +1459,7 @@ impl SamadhiApp {
                                 menu = Some(
                                     ranges
                                         .iter()
+                                        .map(|m| &m.bytes)
                                         .find(|r| r.start <= byte && byte <= r.end)
                                         .map(|r| {
                                             let word = text[r.clone()].to_owned();
@@ -1625,12 +1866,9 @@ impl SamadhiApp {
         if let Some(path) = chosen {
             self.recent_open = false;
             self.section = None;
-            self.request(ctx, Pending::OpenFile(path.clone()));
-            if self.doc.path() != Some(path.as_path()) && self.pending.is_none() {
-                // It could not be opened (moved or deleted): forget it.
-                self.settings.recent_files.retain(|p| *p != path);
-                self.settings_touched();
-            }
+            // A file that can't be opened any more leaves the list (see
+            // `finish_loading`).
+            self.request(ctx, Pending::OpenFile(path));
         }
     }
 
@@ -1795,6 +2033,19 @@ impl SamadhiApp {
             });
     }
 
+    /// The document's word count, recounted only when the text changes.
+    fn word_count_cached(&self) -> usize {
+        let key = hash_of(&self.doc.text);
+        if let Some((k, n)) = self.word_cache.get()
+            && k == key
+        {
+            return n;
+        }
+        let n = self.doc.word_count();
+        self.word_cache.set(Some((key, n)));
+        n
+    }
+
     /// Word count, centred under the page, with the selection's count
     /// beside it while text is highlighted. It fades with the interface,
     /// but stays visible while something is selected.
@@ -1807,7 +2058,7 @@ impl SamadhiApp {
         if opacity <= 0.0 {
             return;
         }
-        let text = word_count_label(self.doc.word_count(), selected);
+        let text = word_count_label(self.word_count_cached(), selected);
         egui::Area::new(Id::unique("word-count"))
             .order(egui::Order::Middle)
             .interactable(false)
@@ -1857,9 +2108,12 @@ impl SamadhiApp {
 }
 
 impl eframe::App for SamadhiApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let watchdog = self.watchdog.clone();
+        watchdog.begin_frame();
         self.poll_background_work(&ctx);
+        watchdog.enter(Phase::Input);
         #[cfg(unix)]
         self.handle_messages(&ctx);
         self.handle_shortcuts(&ctx);
@@ -1920,6 +2174,7 @@ impl eframe::App for SamadhiApp {
         };
         self.page = Some(page);
 
+        watchdog.enter(Phase::Scene);
         let pointer = ctx.input(|i| i.pointer.hover_pos());
         let animating = self.stage.paint(
             ui.painter(),
@@ -1933,6 +2188,7 @@ impl eframe::App for SamadhiApp {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
         self.paint_page(&ctx, ui.painter(), screen, page, fade);
+        watchdog.enter(Phase::Editor);
         if self.loading.is_some() {
             // Nothing to type into until the document arrives.
             self.loading_hint(&ctx, page);
@@ -1940,6 +2196,7 @@ impl eframe::App for SamadhiApp {
             self.text_area(ui, page);
         }
 
+        watchdog.enter(Phase::Controls);
         if fade > 0.0 {
             self.dock(&ctx, screen, page, fade);
             self.maybe_close_flyout(&ctx);
@@ -1957,13 +2214,9 @@ impl eframe::App for SamadhiApp {
         self.unsaved_dialog(&ctx);
         self.toast(&ctx);
 
+        watchdog.enter(Phase::Saving);
         self.autosave();
-        if self.doc.path().is_some() {
-            if self.last_disk_check.elapsed() >= DISK_CHECK {
-                self.sync_with_disk();
-            }
-            ctx.request_repaint_after(DISK_CHECK);
-        }
+        self.probe_disk(&ctx);
         if self
             .settings_changed
             .is_some_and(|t| t.elapsed() >= SETTINGS_SAVE_DELAY)
@@ -1971,6 +2224,8 @@ impl eframe::App for SamadhiApp {
             self.persist_settings();
         }
         self.update_title(&ctx);
+        watchdog.enter(Phase::Dialogs);
+        self.show_requested_dialog(&ctx, frame);
         // Wake up for the pending autosave and settings write.
         if self.last_edit.is_some() {
             ctx.request_repaint_after(AUTOSAVE_DELAY);
@@ -1978,6 +2233,17 @@ impl eframe::App for SamadhiApp {
         if self.settings_changed.is_some() {
             ctx.request_repaint_after(SETTINGS_SAVE_DELAY);
         }
+        // The next frame is due soon while anything moves, and within a few
+        // seconds while a file is open (the disk check); otherwise the app
+        // may rest until there is input.
+        let due = if animating {
+            Some(Duration::from_millis(33))
+        } else if self.doc.path().is_some() {
+            Some(DISK_CHECK)
+        } else {
+            None
+        };
+        watchdog.end_frame(due);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -2048,6 +2314,75 @@ fn paint_ring(
     ));
 }
 
+/// Keeps the editor's state in step with text that changed under it.
+/// egui keeps the cursor (and undo history) across frames, so after the
+/// text is replaced or shortened from outside (another file, a reload, a
+/// spelling fix) the cursor can point past the end, which crashes some
+/// edits (Ctrl+Delete). The cursor is pulled back inside the text, and for
+/// a different document the undo history is dropped, so Ctrl+Z can't bring
+/// back the previous one.
+fn settle_editor(ctx: &egui::Context, id: Id, text: &str, new_document: bool) {
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else {
+        return;
+    };
+    let mut changed = false;
+    if new_document {
+        state.clear_undoer();
+        changed = true;
+    }
+    if let Some(range) = state.cursor.char_range() {
+        let longest = range.primary.index.0.max(range.secondary.index.0);
+        // A character is at most four bytes, so a cursor within the first
+        // quarter of the byte length is surely inside; only otherwise count.
+        let len = if longest > text.len() / 4 {
+            text.chars().count()
+        } else {
+            longest
+        };
+        if longest > len {
+            let clamp = |c: egui::text::CCursor| egui::text::CCursor {
+                index: egui::text::CharIndex(c.index.0.min(len)),
+                ..c
+            };
+            state.cursor.set_char_range(Some(egui::text::CCursorRange {
+                primary: clamp(range.primary),
+                secondary: clamp(range.secondary),
+                h_pos: None,
+            }));
+            changed = true;
+        }
+    }
+    if changed {
+        state.store(ctx, id);
+    }
+}
+
+fn hash_of(value: &impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher as _;
+    let mut hasher = std::hash::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Everything the editor's layout depends on, hashed.
+fn layout_key(
+    text: &str,
+    active: Option<&Range<usize>>,
+    (markdown, family, size, ink, accent): (bool, Option<&str>, f32, Color32, Color32),
+    wrap_width: f32,
+) -> u64 {
+    hash_of(&(
+        text,
+        active,
+        markdown,
+        family,
+        size.to_bits(),
+        ink,
+        accent,
+        wrap_width.to_bits(),
+    ))
+}
+
 fn editor_id() -> Id {
     Id::unique("page-text")
 }
@@ -2080,15 +2415,12 @@ fn byte_of_char(text: &str, chars: usize) -> usize {
 fn paint_squiggle(
     ui: &egui::Ui,
     output: &egui::text_edit::TextEditOutput,
-    text: &str,
-    range: &Range<usize>,
+    chars: &Range<usize>,
     color: Color32,
 ) {
     use egui::text::CCursor;
-    let start = text[..range.start].chars().count();
-    let end = start + text[range.clone()].chars().count();
-    let a = output.galley.pos_from_cursor(CCursor::new(start));
-    let b = output.galley.pos_from_cursor(CCursor::new(end));
+    let a = output.galley.pos_from_cursor(CCursor::new(chars.start));
+    let b = output.galley.pos_from_cursor(CCursor::new(chars.end));
     if (a.top() - b.top()).abs() > 1.0 {
         return; // Word broken across rows; rare, skip.
     }
@@ -2126,7 +2458,16 @@ mod ui_tests {
             audio: false,
             #[cfg(unix)]
             messages: None,
+            file_dialogs: false,
+            watchdog: Watchdog::new(),
         }
+    }
+
+    /// Opens `path` as the app does, and waits for it to arrive.
+    fn open(h: &mut Harness<'_, SamadhiApp>, path: &Path) {
+        let ctx = h.ctx.clone();
+        h.state_mut().open_in_background(&ctx, path.to_path_buf());
+        settle(h);
     }
 
     /// Waits for the document being opened at start-up to arrive.
@@ -2275,6 +2616,24 @@ mod ui_tests {
     }
 
     #[test]
+    fn outside_changes_are_picked_up_by_the_background_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watched.md");
+        std::fs::write(&path, "before").unwrap();
+        let mut h = open_file(dir.path(), &path);
+        std::fs::write(&path, "after, from the other computer").unwrap();
+        h.state_mut().last_disk_check = Instant::now().checked_sub(DISK_CHECK * 2).unwrap();
+        for _ in 0..500 {
+            h.step();
+            if h.state().doc.text != "before" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(h.state().doc.text, "after, from the other computer");
+    }
+
+    #[test]
     fn edits_synced_from_another_device_reload_or_are_kept_beside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shared.md");
@@ -2327,7 +2686,8 @@ mod ui_tests {
         h.run_steps(3);
         assert_eq!(h.state().pending, Some(Pending::OpenFile(path.clone())));
         h.get_by_label("Don't save").click();
-        h.run_steps(3);
+        h.run_steps(2);
+        settle(&mut h);
         assert_eq!(h.state().doc.path(), Some(path.as_path()));
         assert_eq!(h.state().doc.text, "opened by a second launch");
 
@@ -2337,6 +2697,161 @@ mod ui_tests {
         assert_eq!(h.state().pending, None);
     }
 
+    /// Answers the file dialog the app asked for, as the user would.
+    fn answer_dialog(h: &mut Harness<'_, SamadhiApp>, path: Option<PathBuf>) {
+        let ctx = h.ctx.clone();
+        let kind = h
+            .state_mut()
+            .dialog_request
+            .take()
+            .expect("a file dialog was asked for");
+        h.state_mut().dialog_answered(&ctx, kind, path);
+        h.run_steps(2);
+        settle(h);
+    }
+
+    #[test]
+    fn ctrl_o_opens_the_chosen_file_and_cancel_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chosen.md");
+        std::fs::write(&path, "picked in the dialog").unwrap();
+        let mut h = harness(dir.path());
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+        h.run_steps(2);
+        assert_eq!(h.state().dialog_request, Some(DialogKind::Open));
+        answer_dialog(&mut h, None);
+        assert_eq!(h.state().doc.path(), None, "cancelled");
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+        h.run_steps(2);
+        answer_dialog(&mut h, Some(path.clone()));
+        assert_eq!(h.state().doc.path(), Some(path.as_path()));
+        assert_eq!(h.state().doc.text, "picked in the dialog");
+    }
+
+    #[test]
+    fn save_then_quit_from_the_draft_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        type_and_pause(&mut h, "# Kept\nworth saving");
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        h.get_by_label("Save…").click();
+        h.run_steps(2);
+        assert_eq!(
+            h.state().dialog_request,
+            Some(DialogKind::SaveAs {
+                then: Some(Pending::Quit)
+            })
+        );
+        assert!(
+            !h.state().allow_close,
+            "nothing happens until a name is chosen"
+        );
+
+        // No extension typed: the default one is added.
+        answer_dialog(&mut h, Some(dir.path().join("Kept")));
+        let saved = dir.path().join("Kept.md");
+        assert_eq!(
+            std::fs::read_to_string(&saved).unwrap(),
+            "# Kept\nworth saving"
+        );
+        assert!(h.state().allow_close, "then it quits");
+    }
+
+    #[test]
+    fn cancelling_save_as_keeps_the_draft_and_the_app_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        type_and_pause(&mut h, "unsaved");
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        h.get_by_label("Save…").click();
+        h.run_steps(2);
+        answer_dialog(&mut h, None);
+        assert!(!h.state().allow_close);
+        assert_eq!(h.state().doc.text, "unsaved");
+        assert!(
+            Recovery::new(Some(dir.path().join("recovery")))
+                .load()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_dialog_that_vanishes_counts_as_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        let (tx, rx) = mpsc::channel();
+        h.state_mut().dialog = Some(Dialog {
+            kind: DialogKind::Open,
+            rx,
+        });
+        // While it is open, no second dialog is asked for.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+        h.run_steps(2);
+        assert_eq!(h.state().dialog_request, None);
+
+        drop(tx);
+        h.run_steps(2);
+        assert!(h.state().dialog.is_none());
+    }
+
+    #[test]
+    fn editing_right_after_the_text_shrinks_underneath_does_not_crash() {
+        // Found by the fuzzer: with the cursor at the end of a long text,
+        // a shorter version arriving from another computer left the cursor
+        // past the end, and deleting the next word (Alt+Delete) then
+        // crashed inside egui.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shrinks.md");
+        std::fs::write(&path, "a long paragraph that goes on and on. ".repeat(20)).unwrap();
+        let mut h = open_file(dir.path(), &path);
+        h.get_by_role(egui::Role::MultilineTextInput).focus();
+        h.run_steps(2);
+        // Put the cursor at the very end.
+        let end = h.state().doc.text.chars().count();
+        let mut state = egui::TextEdit::load_state(&h.ctx, editor_id()).unwrap();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(end),
+            )));
+        state.store(&h.ctx, editor_id());
+        h.run_steps(2);
+        std::fs::write(&path, "short").unwrap();
+        h.state_mut().sync_with_disk();
+        assert_eq!(h.state().doc.text, "short");
+        for modifiers in [Modifiers::ALT, Modifiers::COMMAND] {
+            for key in [Key::Delete, Key::Backspace] {
+                h.key_press_modifiers(modifiers, key);
+                h.run_steps(2);
+            }
+        }
+        h.event(egui::Event::Text("!".into()));
+        h.run_steps(2);
+        assert!(h.state().doc.text.ends_with('!'));
+    }
+
+    #[test]
+    fn undo_never_brings_back_the_previous_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two) = (dir.path().join("one.md"), dir.path().join("two.md"));
+        std::fs::write(&one, "first file").unwrap();
+        std::fs::write(&two, "second file").unwrap();
+        let mut h = open_file(dir.path(), &one);
+        h.get_by_role(egui::Role::MultilineTextInput)
+            .type_text(" edited");
+        h.run_steps(2);
+        open(&mut h, &two);
+        for _ in 0..3 {
+            h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+            h.run_steps(2);
+        }
+        assert_eq!(h.state().doc.text, "second file");
+    }
+
     #[test]
     fn hovering_open_lists_recent_files_to_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -2344,9 +2859,9 @@ mod ui_tests {
         std::fs::write(&first, "the first").unwrap();
         std::fs::write(&second, "the second").unwrap();
         let mut h = open_file(dir.path(), &first);
-        h.state_mut().open_path(&second);
-        h.state_mut().open_path(&first);
-        h.state_mut().open_path(&second);
+        open(&mut h, &second);
+        open(&mut h, &first);
+        open(&mut h, &second);
         assert_eq!(
             h.state().settings.recent_files,
             [second.clone(), first.clone()]
@@ -2361,7 +2876,8 @@ mod ui_tests {
         h.get_by_label("first.md").hover();
         h.run_steps(2);
         h.get_by_label("first.md").click();
-        h.run_steps(3);
+        h.run_steps(2);
+        settle(&mut h);
         assert_eq!(h.state().doc.path(), Some(first.as_path()));
         assert_eq!(h.state().doc.text, "the first");
     }
@@ -2640,9 +3156,9 @@ mod ui_tests {
         for name in ["Morning pages.md", "Letters home.md"] {
             let other = story.with_file_name(name);
             std::fs::write(&other, "…").unwrap();
-            h.state_mut().open_path(&other);
+            open(&mut h, &other);
         }
-        h.state_mut().open_path(&story);
+        open(&mut h, &story);
         h.get_by_role_and_label(egui::Role::Button, "Document")
             .hover();
         h.run_steps(3);
@@ -2693,5 +3209,448 @@ mod ui_tests {
         h.state_mut().settings.page_opacity = 0.3;
         h.run_steps(3);
         save(&mut h, "ui-7b-frost-particles");
+    }
+}
+
+/// Stress tests: the real app driven by long runs of random input (keys,
+/// text, pastes, clicks, drags, scrolling, the dock, dialogs, settings and
+/// files changing underneath it), checking that it never panics, never
+/// takes long over a frame and never loses text. Each run is reproducible
+/// from its seed; `SAMADHI_FUZZ_SEEDS` and `SAMADHI_FUZZ_STEPS` make it
+/// longer, e.g. `SAMADHI_FUZZ_SEEDS=50 SAMADHI_FUZZ_STEPS=3000 cargo test
+/// --release fuzz_`.
+#[cfg(test)]
+mod stress_tests {
+    use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    /// Something done to the app, by name.
+    type Action<'a> = &'a dyn Fn(&Harness<'_, SamadhiApp>);
+
+    /// Far more than any frame should take, even in a debug build, but
+    /// short enough to catch a hang or work that grows out of control.
+    const FRAME_LIMIT: Duration = Duration::from_secs(1);
+
+    /// Small deterministic generator (xorshift), so a failing run can be
+    /// replayed from its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        fn unit(&mut self) -> f32 {
+            (self.next() >> 40) as f32 / (1u64 << 24) as f32
+        }
+
+        fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+            &items[self.below(items.len())]
+        }
+    }
+
+    const SNIPPETS: &[&str] = &[
+        "a",
+        "the ",
+        "Teh ",
+        "wrods ",
+        "\n",
+        "\n\n",
+        "# ",
+        "## Heading\n",
+        "> quote ",
+        "- item\n",
+        "**bold** ",
+        "*it* ",
+        "`code` ",
+        "```\nfenced\n```\n",
+        "~~gone~~ ",
+        "[link](https://x.y) ",
+        "é",
+        "ñandú ",
+        "日本語 ",
+        "🌿 ",
+        "👩‍👩‍👧 ",
+        "e\u{301} ",
+        "مرحبا ",
+        "\t",
+        "    ",
+        "--- ",
+        "*",
+        "**",
+        "`",
+        "1. one\n",
+        "\u{200b}",
+        "word\u{a0}word ",
+    ];
+    const KEYS: &[Key] = &[
+        Key::ArrowLeft,
+        Key::ArrowRight,
+        Key::ArrowUp,
+        Key::ArrowDown,
+        Key::Home,
+        Key::End,
+        Key::PageUp,
+        Key::PageDown,
+        Key::Backspace,
+        Key::Delete,
+        Key::Enter,
+        Key::Tab,
+    ];
+    const SECTIONS: &[&str] = &[
+        "Font",
+        "Text size",
+        "Theme",
+        "Music",
+        "Typing sounds",
+        "Timer",
+        "Document",
+    ];
+
+    fn sample_text(rng: &mut Rng, words: usize) -> String {
+        let mut text = String::from("# A long walk\n\n");
+        for i in 0..words {
+            text.push_str(rng.pick(SNIPPETS));
+            if i % 13 == 0 {
+                text.push_str("ordinary words between the odd ones ");
+            }
+        }
+        text
+    }
+
+    fn launch(dir: &Path, file: &Path) -> Harness<'static, SamadhiApp> {
+        let settings = dir.join("settings.toml");
+        std::fs::write(&settings, "markdown = true\nspell_check = true\n").unwrap();
+        let options = Options {
+            file: Some(file.to_path_buf()),
+            settings_path: Some(settings),
+            documents_dir: Some(dir.join("docs")),
+            recovery_dir: Some(dir.join("recovery")),
+            audio: false,
+            #[cfg(unix)]
+            messages: None,
+            file_dialogs: false,
+            watchdog: Watchdog::new(),
+        };
+        // Scripts the bundled fonts don't cover (Arabic, Japanese) are drawn
+        // as boxes, as in the real app, rather than failing the test.
+        let mut h = Harness::builder()
+            .with_size(vec2(1500.0, 950.0))
+            .allow_missing_glyphs()
+            .build_eframe(move |cc| SamadhiApp::new(cc, options));
+        for _ in 0..1000 {
+            h.step();
+            if h.state().loading.is_none() && h.state().spell.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(h.state().spell.is_some(), "spell checker never loaded");
+        h
+    }
+
+    /// One frame, which must not run long.
+    fn frame(h: &mut Harness<'_, SamadhiApp>, what: &str) {
+        let start = Instant::now();
+        h.step();
+        let took = start.elapsed();
+        assert!(took < FRAME_LIMIT, "a frame took {took:?} after {what}");
+    }
+
+    fn random_point(rng: &mut Rng, area: Rect) -> egui::Pos2 {
+        area.min + vec2(rng.unit() * area.width(), rng.unit() * area.height())
+    }
+
+    fn click(h: &Harness<'_, SamadhiApp>, pos: egui::Pos2, button: egui::PointerButton) {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+    }
+
+    /// Does one random thing; returns what, for failure messages.
+    #[allow(clippy::too_many_lines)]
+    fn act(h: &mut Harness<'_, SamadhiApp>, rng: &mut Rng, dir: &Path, file: &Path) -> String {
+        let page = h
+            .state()
+            .page
+            .unwrap_or(Rect::from_min_size(pos2(200.0, 60.0), vec2(700.0, 800.0)));
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1500.0, 950.0));
+        let modifiers = *rng.pick(&[
+            Modifiers::NONE,
+            Modifiers::NONE,
+            Modifiers::SHIFT,
+            Modifiers::COMMAND,
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Modifiers::ALT,
+        ]);
+        match rng.below(20) {
+            0..=4 => {
+                let text = rng.pick(SNIPPETS).to_string();
+                h.event(egui::Event::Text(text.clone()));
+                format!("typing {text:?}")
+            }
+            5..=7 => {
+                let key = *rng.pick(KEYS);
+                h.key_press_modifiers(modifiers, key);
+                format!("{modifiers:?}+{key:?}")
+            }
+            8 => {
+                let key = *rng.pick(&[
+                    Key::A,
+                    Key::Z,
+                    Key::Y,
+                    Key::S,
+                    Key::N,
+                    Key::O,
+                    Key::M,
+                    Key::Equals,
+                    Key::Minus,
+                ]);
+                h.key_press_modifiers(
+                    if modifiers.shift {
+                        Modifiers::COMMAND | Modifiers::SHIFT
+                    } else {
+                        Modifiers::COMMAND
+                    },
+                    key,
+                );
+                format!("Ctrl+{key:?}")
+            }
+            9 => {
+                let event = match rng.below(3) {
+                    0 => {
+                        let words = rng.below(40);
+                        egui::Event::Paste(sample_text(rng, words))
+                    }
+                    1 => egui::Event::Cut,
+                    _ => egui::Event::Copy,
+                };
+                let what = format!("{event:?}").chars().take(40).collect();
+                h.event(event);
+                what
+            }
+            10 | 11 => {
+                // Click, double-click or drag-select in the text.
+                let a = random_point(rng, page);
+                h.hover_at(a);
+                frame(h, "moving to the text");
+                h.drag_at(a);
+                frame(h, "pressing in the text");
+                let steps = rng.below(6);
+                for _ in 0..steps {
+                    h.hover_at(random_point(rng, page.expand(80.0)));
+                    frame(h, "drag-selecting");
+                }
+                h.drop_at(random_point(rng, page));
+                format!("drag-select ({steps} moves)")
+            }
+            12 => {
+                click(h, random_point(rng, page), egui::PointerButton::Secondary);
+                "right-click".into()
+            }
+            13 => {
+                h.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: vec2(0.0, rng.unit() * 40.0 - 20.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                });
+                "scrolling".into()
+            }
+            14 | 15 => {
+                // Into the dock, then a click somewhere in the open flyout.
+                let section = *rng.pick(SECTIONS);
+                h.hover_at(pos2(5.0, 5.0));
+                frame(h, "waking the interface");
+                if let Some(node) = h
+                    .query_all_by_label(section)
+                    .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button)
+                {
+                    node.hover();
+                }
+                frame(h, "opening a flyout");
+                if let Some(area) = h.state().menu_area {
+                    let at = random_point(rng, area);
+                    h.hover_at(at);
+                    frame(h, "moving over the flyout");
+                    click(h, at, egui::PointerButton::Primary);
+                }
+                format!("the {section} flyout")
+            }
+            16 => {
+                // A question or dialog, answered at random.
+                if h.state().pending.is_some() {
+                    // (Esc there cancels the question.)
+                    let label = *rng.pick(&["Cancel", "Don't save", "Save…", "Esc"]);
+                    if label == "Esc" {
+                        h.key_press(Key::Escape);
+                        return "Esc on the draft question".into();
+                    }
+                    if let Some(node) = h.query_by_label(label) {
+                        node.click();
+                    }
+                    return format!("answering the draft question: {label}");
+                }
+                if let Some(kind) = h.state_mut().dialog_request.take() {
+                    let choice = match rng.below(3) {
+                        0 => None,
+                        1 => Some(dir.join(format!("saved-{}.md", rng.below(5)))),
+                        _ => Some(file.to_path_buf()),
+                    };
+                    let ctx = h.ctx.clone();
+                    h.state_mut()
+                        .dialog_answered(&ctx, kind.clone(), choice.clone());
+                    return format!("answering {kind:?} with {choice:?}");
+                }
+                // Nothing to answer: start a new draft, which leads to the
+                // question once there is text. (Esc would just quit.)
+                h.key_press_modifiers(Modifiers::COMMAND, Key::N);
+                "Ctrl+N".into()
+            }
+            17 => {
+                let s = &mut h.state_mut().settings;
+                match rng.below(4) {
+                    0 => s.markdown = !s.markdown,
+                    1 => s.spell_check = !s.spell_check,
+                    2 => s.page_opacity = rng.unit(),
+                    _ => s.motion = !s.motion,
+                }
+                "changing a setting".into()
+            }
+            18 => {
+                // The file changes on "another computer".
+                if let Some(path) = h.state().doc.path().map(Path::to_path_buf) {
+                    let _ = std::fs::write(&path, sample_text(rng, 30));
+                    h.state_mut().last_disk_check = Instant::now()
+                        .checked_sub(DISK_CHECK * 2)
+                        .unwrap_or_else(Instant::now);
+                }
+                "an outside change".into()
+            }
+            _ => {
+                // Time passes: let autosave and the timer run.
+                h.state_mut().last_edit = h
+                    .state()
+                    .last_edit
+                    .map(|t| t.checked_sub(AUTOSAVE_DELAY * 2).unwrap_or(t));
+                h.hover_at(random_point(rng, screen));
+                "time passing".into()
+            }
+        }
+    }
+
+    fn fuzz(seed: u64, steps: usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fuzzed.md");
+        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        std::fs::write(&file, sample_text(&mut rng, 400)).unwrap();
+        let mut h = launch(dir.path(), &file);
+        let mut history: Vec<String> = Vec::new();
+        for step in 0..steps {
+            let what = act(&mut h, &mut rng, dir.path(), &file);
+            history.push(what);
+            let recent = history[history.len().saturating_sub(5)..].join(" → ");
+            frame(&mut h, &format!("step {step} (seed {seed}): {recent}"));
+            frame(&mut h, &format!("step {step} (seed {seed}): {recent}"));
+            if h.state().allow_close {
+                break; // Quitting is a fine way for a run to end.
+            }
+            let s = &h.state().settings;
+            assert!((MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&s.font_size));
+            assert!(s.recent_files.len() <= crate::settings::RECENT_FILES);
+        }
+        // Nothing typed is lost: a saved document matches its file once
+        // settled, and a draft is in the recovery cache.
+        let app = h.state_mut();
+        app.loading = None;
+        let in_file = app.checkpoint();
+        let text = app.doc.text.clone();
+        match app.doc.path() {
+            Some(path) if in_file => {
+                let saved = Document::open(path).unwrap().text;
+                assert_eq!(saved, text, "seed {seed}: the file differs from the page");
+            }
+            _ if !text.trim().is_empty() => {
+                let draft = Recovery::new(Some(dir.path().join("recovery"))).load();
+                assert_eq!(draft.map(|d| d.text), Some(text), "seed {seed}: draft lost");
+            }
+            _ => {}
+        }
+    }
+
+    fn env_or(name: &str, default: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    }
+
+    #[test]
+    fn fuzz_the_interface_with_random_input() {
+        let seeds = env_or("SAMADHI_FUZZ_SEEDS", 3);
+        let steps = env_or("SAMADHI_FUZZ_STEPS", 300);
+        for seed in 1..=seeds as u64 {
+            fuzz(seed, steps);
+        }
+    }
+
+    #[test]
+    fn a_novel_length_document_stays_responsive() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("novel.md");
+        let mut rng = Rng(7);
+        // About 40,000 words, misspellings and markdown included.
+        let text = sample_text(&mut rng, 30_000);
+        std::fs::write(&file, &text).unwrap();
+        let mut h = launch(dir.path(), &file);
+        h.get_by_role(egui::Role::MultilineTextInput).focus();
+        frame(&mut h, "focusing");
+        let actions: [(&str, Action<'_>); 6] = [
+            ("jumping to the end", &|h| {
+                h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+            }),
+            ("typing", &|h| h.event(egui::Event::Text("x".into()))),
+            ("selecting all", &|h| {
+                h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+            }),
+            ("copying", &|h| h.event(egui::Event::Copy)),
+            ("deselecting", &|h| h.key_press(Key::ArrowRight)),
+            ("pasting a chapter", &|h| {
+                h.event(egui::Event::Paste(text.chars().take(20_000).collect()));
+            }),
+        ];
+        for (what, action) in actions {
+            action(&h);
+            for _ in 0..3 {
+                frame(&mut h, what);
+            }
+        }
+    }
+
+    #[test]
+    fn char_offsets_follow_multibyte_text() {
+        let text = "é 日本 🌿 teh";
+        let start = text.find("teh").unwrap();
+        let ranges = with_char_offsets(text, vec![0..2, start..start + 3]);
+        assert_eq!(ranges[0].chars, 0..1);
+        assert_eq!(ranges[1].chars, 7..10);
+        // Out-of-order or mid-character ranges never panic.
+        #[allow(clippy::reversed_empty_ranges)] // deliberately backwards
+        let odd = with_char_offsets(text, vec![5..4, 4..100, 3..3]);
+        assert_eq!(odd.len(), 3);
     }
 }

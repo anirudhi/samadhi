@@ -27,6 +27,7 @@ pub mod spell;
 pub mod stage;
 pub mod theme;
 pub mod timer;
+pub mod watchdog;
 pub mod widgets;
 
 use std::path::PathBuf;
@@ -56,4 +57,34 @@ pub fn asset_dirs(kind: &str) -> Vec<PathBuf> {
         dirs.push(exe_dir.join("assets").join(kind));
     }
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asset_dirs_end_in_the_requested_kind() {
+        for kind in ["backgrounds", "music", "clicks"] {
+            let dirs = asset_dirs(kind);
+            assert!(!dirs.is_empty(), "{kind}");
+            for dir in &dirs {
+                assert!(dir.ends_with(kind), "{}", dir.display());
+            }
+        }
+        // The portable folder sits next to the running binary.
+        let exe_dir = std::env::current_exe().unwrap();
+        let portable = exe_dir.parent().unwrap().join("assets").join("music");
+        assert!(asset_dirs("music").contains(&portable));
+    }
+
+    #[test]
+    fn project_dirs_use_the_ascii_app_id() {
+        if let Some(dirs) = project_dirs() {
+            let config = dirs.config_dir().to_string_lossy().to_lowercase();
+            assert!(config.contains(APP_ID), "{config}");
+            assert!(APP_ID.is_ascii());
+            assert!(asset_dirs("music").contains(&dirs.data_dir().join("music")));
+        }
+    }
 }

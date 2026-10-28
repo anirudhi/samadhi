@@ -36,6 +36,7 @@ image = { version = "0.25.10", default-features = false, features = [
     "webp",
 ] }
 log = "0.4.34"
+pollster = "0.4"
 resvg = { version = "0.48.1", default-features = false }
 rfd = "0.17.2"
 rodio = { version = "0.23.0", default-features = false, features = [
@@ -90,3 +91,4 @@ opt-level = 2
 
 [dev-dependencies]
 egui_kittest = { version = "0.37.0", features = ["eframe", "wgpu", "snapshot"] }
+proptest = "1"

@@ -83,18 +83,24 @@ pub fn apply_drag(rect: Rect, drag: Drag, delta: Vec2, bounds: Rect) -> Rect {
     match drag {
         Drag::Move => clamp_into(rect.translate(delta), bounds),
         Drag::Resize(e) => {
+            // In a window smaller than the minimum page, the page may be as
+            // small as the window.
+            let min = MIN_SIZE.min(bounds.size());
+            // Like `f32::clamp`, but when the limits cross (the page is
+            // already at its smallest), the lower one wins instead of a panic.
+            let within = |v: f32, lo: f32, hi: f32| v.min(hi).max(lo);
             let mut r = rect;
             if e.left {
-                r.min.x = (r.min.x + delta.x).clamp(bounds.min.x, r.max.x - MIN_SIZE.x);
+                r.min.x = within(r.min.x + delta.x, bounds.min.x, r.max.x - min.x);
             }
             if e.right {
-                r.max.x = (r.max.x + delta.x).clamp(r.min.x + MIN_SIZE.x, bounds.max.x);
+                r.max.x = within(r.max.x + delta.x, r.min.x + min.x, bounds.max.x);
             }
             if e.top {
-                r.min.y = (r.min.y + delta.y).clamp(bounds.min.y, r.max.y - MIN_SIZE.y);
+                r.min.y = within(r.min.y + delta.y, bounds.min.y, r.max.y - min.y);
             }
             if e.bottom {
-                r.max.y = (r.max.y + delta.y).clamp(r.min.y + MIN_SIZE.y, bounds.max.y);
+                r.max.y = within(r.max.y + delta.y, r.min.y + min.y, bounds.max.y);
             }
             r
         }

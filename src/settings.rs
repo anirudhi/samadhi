@@ -156,10 +156,13 @@ impl Settings {
         self.page_opacity = finite_or(self.page_opacity, 0.0).clamp(0.0, 1.0);
         self.music_volume = finite_or(self.music_volume, 0.6).clamp(0.0, 1.0);
         self.click_volume = finite_or(self.click_volume, 0.7).clamp(0.0, 1.0);
+        // Letters and digits only: a hand-edited ". md" or "md/" becomes
+        // "md", never part of a file name it would mangle.
         self.default_extension = self
             .default_extension
-            .trim()
-            .trim_start_matches('.')
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
             .to_ascii_lowercase();
         self.timer_minutes = self
             .timer_minutes

@@ -166,3 +166,63 @@ pub fn install(ctx: &egui::Context, dark: bool) {
         w.open.weak_bg_fill = tint(22);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn luminance(c: Color32) -> f32 {
+        0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())
+    }
+
+    #[test]
+    fn ink_contrasts_with_the_panels_in_both_variants() {
+        for dark in [false, true] {
+            let p = palette(dark);
+            let (ink, window) = (luminance(p.ink), luminance(p.window_fill));
+            assert!(
+                (ink - window).abs() > 120.0,
+                "dark {dark}: {ink} vs {window}"
+            );
+            assert_eq!(ink > window, dark, "dark themes use light ink");
+            // Muted text sits between the ink and the background.
+            let muted = luminance(p.muted);
+            assert!(muted > ink.min(window) && muted < ink.max(window));
+            // Panels are translucent so the scene shows through.
+            assert!(p.panel_fill.a() < 255 && p.panel_fill.a() > 128);
+        }
+    }
+
+    #[test]
+    fn panel_frames_are_rounded_and_shadowed() {
+        for dark in [false, true] {
+            let frame = panel_frame(dark);
+            assert_eq!(frame.fill, palette(dark).panel_fill);
+            assert_eq!(frame.corner_radius, CornerRadius::same(PANEL_RADIUS));
+            assert!(frame.shadow.blur > 0);
+        }
+        assert!(panel_shadow(true).color.a() > panel_shadow(false).color.a());
+    }
+
+    #[test]
+    fn install_switches_visuals_and_current_follows() {
+        let ctx = egui::Context::default();
+        for dark in [true, false, true] {
+            install(&ctx, dark);
+            let mut seen = None;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                seen = Some((ui.visuals().dark_mode, current(ui).ink));
+            });
+            output.textures_delta.clear();
+            assert_eq!(seen, Some((dark, palette(dark).ink)));
+            ctx.all_styles_mut(|style| {
+                assert_eq!(style.visuals.override_text_color, Some(palette(dark).ink));
+                assert_eq!(style.visuals.panel_fill, Color32::TRANSPARENT);
+                assert_eq!(
+                    style.text_styles[&TextStyle::Body],
+                    FontId::new(14.5, FontFamily::Proportional)
+                );
+            });
+        }
+    }
+}

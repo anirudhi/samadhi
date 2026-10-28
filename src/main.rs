@@ -32,13 +32,16 @@ Shortcuts:
   Ctrl+= / Ctrl+-  Larger / smaller text";
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let log_file = init_logging();
 
     let mut file: Option<PathBuf> = None;
     for arg in std::env::args_os().skip(1) {
         match arg.to_str() {
             Some("-h" | "--help") => {
                 println!("{USAGE}");
+                if let Some(path) = log_file {
+                    println!("\nLog: {}", path.display());
+                }
                 return ExitCode::SUCCESS;
             }
             Some("-V" | "--version") => {
@@ -124,6 +127,7 @@ fn main() -> ExitCode {
             let options = Options {
                 file,
                 messages: Some(messages),
+                watchdog: samadhi::watchdog::Watchdog::spawn(),
                 ..Options::default()
             };
             Ok(Box::new(SamadhiApp::new(cc, options)))
@@ -171,4 +175,63 @@ fn window_icon() -> Option<egui::IconData> {
         height: image.height(),
         rgba: image.into_raw(),
     })
+}
+
+/// Logs warnings (and Samādhi's own notes) to the terminal when there is
+/// one, and always to a log file, so a freeze or crash in normal use leaves
+/// a trace. The file starts afresh once it passes a megabyte. Returns its
+/// path.
+fn init_logging() -> Option<PathBuf> {
+    use std::io::{IsTerminal as _, Write};
+
+    /// Writes to the file and, when attached to a terminal, stderr too.
+    struct Tee {
+        file: Option<std::fs::File>,
+        terminal: bool,
+    }
+    impl Write for Tee {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Some(file) = &mut self.file {
+                let _ = file.write_all(buf);
+            }
+            if self.terminal {
+                let _ = std::io::stderr().write_all(buf);
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if let Some(file) = &mut self.file {
+                file.flush()?;
+            }
+            Ok(())
+        }
+    }
+
+    let path = samadhi::project_dirs().map(|d| {
+        d.state_dir()
+            .unwrap_or_else(|| d.data_local_dir())
+            .join("samadhi.log")
+    });
+    let file = path.as_ref().and_then(|path| {
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        let too_big = std::fs::metadata(path).is_ok_and(|m| m.len() > 1 << 20);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(!too_big)
+            .write(true)
+            .truncate(too_big)
+            .open(path)
+            .ok()
+    });
+    let tee = Tee {
+        file,
+        terminal: std::io::stderr().is_terminal(),
+    };
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,samadhi=info"),
+    )
+    .target(env_logger::Target::Pipe(Box::new(tee)))
+    .init();
+    log::info!("Samādhi {} starting", env!("CARGO_PKG_VERSION"));
+    path
 }

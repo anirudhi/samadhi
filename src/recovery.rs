@@ -53,7 +53,8 @@ impl Recovery {
             return None;
         }
         let origin = fs::read_to_string(dir.join(ORIGIN_FILE)).unwrap_or_default();
-        let path = (!origin.trim().is_empty()).then(|| PathBuf::from(origin.trim()));
+        // Exactly as stored: file names may begin or end with spaces.
+        let path = (!origin.is_empty()).then(|| PathBuf::from(origin));
         Some(Draft { text, path })
     }
 

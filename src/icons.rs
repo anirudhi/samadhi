@@ -177,4 +177,68 @@ mod tests {
             assert!(ink < 36 * 36 / 2, "{icon:?} looks filled, not stroked");
         }
     }
+
+    #[test]
+    fn icons_render_at_extreme_sizes() {
+        for icon in Icon::ALL {
+            let tiny = rasterize(icon, 1).unwrap();
+            assert_eq!(tiny.size, [1, 1]);
+            let big = rasterize(icon, 256).unwrap();
+            assert_eq!(big.size, [256, 256]);
+            // Premultiplied white: colour never exceeds coverage.
+            assert!(big.pixels.iter().all(|p| p.r() <= p.a()));
+        }
+        assert!(rasterize(Icon::Font, 0).is_none(), "no zero-sized pixmaps");
+    }
+
+    #[test]
+    fn every_icon_has_its_own_artwork() {
+        let svgs: std::collections::HashSet<_> = Icon::ALL.iter().map(|i| i.svg()).collect();
+        assert_eq!(svgs.len(), Icon::ALL.len());
+        for icon in Icon::ALL {
+            assert!(icon.svg().contains("stroke-width=\"2\""), "{icon:?}");
+            assert!(icon.svg().contains("currentColor"), "{icon:?}");
+        }
+    }
+
+    #[test]
+    fn textures_are_cached_per_icon_and_size() {
+        let ctx = egui::Context::default();
+        let a = texture(&ctx, Icon::Play, 16).unwrap();
+        let b = texture(&ctx, Icon::Play, 16).unwrap();
+        assert_eq!(a.id(), b.id());
+        let bigger = texture(&ctx, Icon::Play, 32).unwrap();
+        assert_ne!(a.id(), bigger.id());
+        assert_eq!(bigger.size(), [32, 32]);
+        assert_ne!(a.id(), texture(&ctx, Icon::Pause, 16).unwrap().id());
+    }
+
+    #[test]
+    fn painting_draws_one_pixel_aligned_image() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let rect = Rect::from_min_size(pos2(10.3, 20.7), egui::vec2(16.0, 24.0));
+            paint(Icon::Timer, ui.painter(), rect, Color32::RED);
+            // An empty rectangle still gets a one-pixel icon.
+            let empty = Rect::from_min_size(pos2(5.0, 5.0), egui::Vec2::ZERO);
+            paint(Icon::Timer, ui.painter(), empty, Color32::RED);
+        });
+        output.textures_delta.clear();
+        let images: Vec<Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                    Some(mesh.calc_bounds())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 2);
+        let first = images[0];
+        assert!((images[1].width() - 1.0).abs() < 1e-3, "{:?}", images[1]);
+        assert!((first.width() - 16.0).abs() < 1e-3, "{first:?}");
+        assert!((first.min.x - first.min.x.round()).abs() < 1e-3);
+        assert!((first.min.y - first.min.y.round()).abs() < 1e-3);
+    }
 }

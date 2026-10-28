@@ -319,3 +319,196 @@ pub fn switch(ui: &mut egui::Ui, icon: Icon, label: &str, on: bool) -> egui::Res
         format!("{label}: off")
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::accesskit::{Role, Toggled};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    /// Presses at `x` (a fraction of the slider's width) and releases at
+    /// `to`, returning the harness so the result can be read.
+    fn slide(start: f32, x: f32, to: f32) -> Harness<'static, (f32, usize)> {
+        let mut h = Harness::new_ui_state(
+            |ui, (value, changes): &mut (f32, usize)| {
+                if slider(ui, value, "Volume") {
+                    *changes += 1;
+                }
+            },
+            (start, 0),
+        );
+        let rect = h.get_by_role_and_label(Role::Slider, "Volume").rect();
+        let at = |f: f32| pos2(rect.left() + f * rect.width(), rect.center().y);
+        h.hover_at(at(x));
+        h.run();
+        h.drag_at(at(x));
+        h.run();
+        h.hover_at(at(to));
+        h.run();
+        h.drop_at(at(to));
+        h.run();
+        h
+    }
+
+    #[test]
+    fn clicking_a_slider_jumps_to_that_point() {
+        let h = slide(0.0, 0.25, 0.25);
+        let (value, changes) = *h.state();
+        assert!((value - 0.25).abs() < 0.02, "{value}");
+        assert!(changes >= 1);
+    }
+
+    #[test]
+    fn dragging_a_slider_follows_and_clamps() {
+        let h = slide(0.5, 0.5, 3.0);
+        assert!((h.state().0 - 1.0).abs() < f32::EPSILON);
+        let h = slide(0.5, 0.5, -2.0);
+        assert!(h.state().0.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sliders_report_their_value_to_assistive_tech() {
+        let h = Harness::new_ui(|ui| {
+            let mut v = 0.4;
+            slider(ui, &mut v, "Music volume");
+        });
+        let node = h.get_by_role_and_label(Role::Slider, "Music volume");
+        let value = node.accesskit_node().numeric_value().unwrap();
+        assert!((value - 0.4).abs() < 1e-6);
+        assert_eq!(node.rect().size(), vec2(SLIDER_WIDTH, ICON_BUTTON));
+    }
+
+    #[test]
+    fn switches_toggle_and_say_so() {
+        let mut h = Harness::new_ui_state(
+            |ui, on: &mut bool| {
+                if switch(ui, Icon::Motion, "Motion", *on).clicked() {
+                    *on = !*on;
+                }
+            },
+            false,
+        );
+        let toggled = |h: &Harness<'_, bool>| {
+            h.get_by_role_and_label(Role::Switch, "Motion")
+                .accesskit_node()
+                .toggled()
+        };
+        assert_eq!(toggled(&h), Some(Toggled::False));
+        h.get_by_role_and_label(Role::Switch, "Motion").click();
+        h.run();
+        assert!(*h.state());
+        assert_eq!(toggled(&h), Some(Toggled::True));
+        h.get_by_role_and_label(Role::Switch, "Motion").click();
+        h.run();
+        assert!(!*h.state());
+    }
+
+    #[test]
+    fn icon_buttons_are_labelled_and_clickable() {
+        let mut h = Harness::new_ui_state(
+            |ui, clicks: &mut u32| {
+                if icon_button(ui, Icon::Save, "Save", false).clicked() {
+                    *clicks += 1;
+                }
+                if icon_button_bare(ui, Icon::Open, "Open", true).clicked() {
+                    *clicks += 100;
+                }
+            },
+            0,
+        );
+        let save = h.get_by_role_and_label(Role::Button, "Save");
+        assert_eq!(save.rect().size(), Vec2::splat(ICON_BUTTON));
+        save.click();
+        h.run();
+        assert_eq!(*h.state(), 1);
+        h.get_by_role_and_label(Role::Button, "Open").click();
+        h.run();
+        assert_eq!(*h.state(), 101);
+    }
+
+    #[test]
+    fn hovering_an_icon_button_shows_its_name() {
+        let mut h = Harness::new_ui(|ui| {
+            icon_button(ui, Icon::Timer, "Focus timer", false);
+        });
+        h.get_by_role_and_label(Role::Button, "Focus timer").hover();
+        // Tooltips appear after a short delay.
+        for _ in 0..10 {
+            h.run();
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+        assert!(h.get_all_by_label("Focus timer").count() >= 2);
+    }
+
+    #[test]
+    fn choices_report_selection() {
+        let mut h = Harness::new_ui_state(
+            |ui, picked: &mut usize| {
+                for (i, name) in ["Serif", "Sans"].into_iter().enumerate() {
+                    if text_choice(ui, name, FontId::proportional(14.0), *picked == i).clicked() {
+                        *picked = i;
+                    }
+                }
+                for (i, name) in ["Rain", "Waves"].into_iter().enumerate() {
+                    if list_choice(ui, name, *picked == i + 2).clicked() {
+                        *picked = i + 2;
+                    }
+                }
+                if thumb_button(ui, None, "Hills", *picked == 4).clicked() {
+                    *picked = 4;
+                }
+            },
+            0,
+        );
+        // egui reports a selected button as toggled on.
+        let selected = |h: &Harness<'_, usize>, name: &str| {
+            h.get_by_role_and_label(Role::Button, name)
+                .accesskit_node()
+                .toggled()
+                .map(|t| t == Toggled::True)
+        };
+        assert_eq!(selected(&h, "Serif"), Some(true));
+        assert_eq!(selected(&h, "Sans"), Some(false));
+        for (name, index) in [("Sans", 1), ("Waves", 3), ("Hills", 4), ("Rain", 2)] {
+            h.get_by_role_and_label(Role::Button, name).click();
+            h.run();
+            assert_eq!(*h.state(), index, "{name}");
+            assert_eq!(selected(&h, name), Some(true), "{name}");
+        }
+    }
+
+    #[test]
+    fn captions_take_room_for_their_text() {
+        let h = Harness::new_ui(|ui| {
+            caption(ui, "MUSIC", 11.0, Color32::WHITE, 1.5);
+            caption(ui, "", 11.0, Color32::BLACK, 0.0);
+            caption(ui, "Ünïcødé — “quoted”", 30.0, Color32::GRAY, -2.0);
+        });
+        drop(h);
+    }
+
+    #[test]
+    fn halos_contrast_with_the_ink() {
+        assert!(halo(Color32::WHITE).r() < 128);
+        assert_eq!(halo(Color32::WHITE), Color32::from_black_alpha(40));
+        assert_eq!(halo(Color32::BLACK), Color32::from_white_alpha(50));
+    }
+
+    #[test]
+    fn snapping_lands_on_physical_pixels() {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(2.0);
+        let mut snapped = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            snapped = Some((snap(ui, pos2(10.3, 4.74)), one_px(ui)));
+        });
+        output.textures_delta.clear();
+        let (p, px) = snapped.unwrap();
+        assert!(
+            (p.x - 10.5).abs() < 1e-6 && (p.y - 4.5).abs() < 1e-6,
+            "{p:?}"
+        );
+        assert!((px - 0.5).abs() < f32::EPSILON);
+    }
+}
