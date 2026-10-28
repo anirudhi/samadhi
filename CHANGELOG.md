@@ -13,6 +13,11 @@ becomes its notes on GitHub.
 - **Writing on several computers:** a file changed on another computer
   reloads within seconds of syncing. If you also have unsaved edits, the
   other version is kept beside yours as a conflicted copy.
+- **One copy at a time:** launching Samādhi again (or opening a file with
+  it) brings the running app forward instead of starting a second one.
+- **Faster start:** the window appears straight away, while the document
+  loads in the background (useful on a network drive), and the graphics
+  set up faster.
 - **macOS:** the app adds `Samādhi.app` to `~/Applications` on first run,
   so a Homebrew install appears in Launchpad and Spotlight. The open
   dialog no longer greys out text files with other extensions.

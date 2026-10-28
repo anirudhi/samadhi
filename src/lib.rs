@@ -13,6 +13,8 @@ pub mod desktop;
 pub mod document;
 pub mod fonts;
 pub mod icons;
+#[cfg(unix)]
+pub mod instance;
 #[cfg(any(target_os = "macos", test))]
 pub mod macos;
 pub mod markdown;

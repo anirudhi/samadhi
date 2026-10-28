@@ -2,10 +2,15 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, OnceLock, mpsc};
 
-use eframe::egui;
+use eframe::{egui, egui_wgpu, wgpu};
 use samadhi::app::{Options, SamadhiApp};
+use samadhi::instance::{self, Claim, Message};
 use samadhi::{APP_ID, APP_NAME};
+
+/// Set when Samādhi restarts itself on OpenGL because Vulkan failed.
+const GL_FALLBACK: &str = "SAMADHI_GL_FALLBACK";
 
 const USAGE: &str = "\
 Usage: samadhi [OPTIONS] [FILE]
@@ -52,6 +57,32 @@ fn main() -> ExitCode {
         }
     }
 
+    // Only one copy runs: a later launch hands over its file and exits.
+    let request = match &file {
+        Some(path) => Message::Open(std::path::absolute(path).unwrap_or_else(|_| path.clone())),
+        None => Message::Show,
+    };
+    let instance = match instance::claim(&instance::default_socket(), &request) {
+        Ok(Claim::HandedOver) => return ExitCode::SUCCESS,
+        Ok(Claim::First(instance)) => Some(instance),
+        Err(err) => {
+            log::warn!("running without the single-instance check: {err}");
+            None
+        }
+    };
+    // Requests from later launches, and the app to wake when one arrives.
+    let (messages_tx, messages) = mpsc::channel();
+    let app_ctx: Arc<OnceLock<egui::Context>> = Arc::default();
+    let guard = instance.map(|instance| {
+        let app_ctx = Arc::clone(&app_ctx);
+        instance.serve(move |message| {
+            let _ = messages_tx.send(message);
+            if let Some(ctx) = app_ctx.get() {
+                ctx.request_repaint();
+            }
+        })
+    });
+
     #[cfg(target_os = "linux")]
     samadhi::desktop::ensure_launcher();
     #[cfg(target_os = "macos")]
@@ -68,24 +99,62 @@ fn main() -> ExitCode {
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
+    let fallback = std::env::var_os(GL_FALLBACK).is_some();
+    if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup
+        && wgpu::Backends::from_env().is_none()
+    {
+        // Vulkan (Metal on macOS) directly: probing OpenGL as well costs a
+        // noticeable part of startup. If that fails we restart on OpenGL.
+        setup.instance_descriptor.backends = if fallback {
+            wgpu::Backends::GL
+        } else {
+            wgpu::Backends::PRIMARY
+        };
+    }
 
     let result = eframe::run_native(
         APP_NAME,
         options,
         Box::new(move |cc| {
+            let _ = app_ctx.set(cc.egui_ctx.clone());
             let options = Options {
                 file,
+                messages: Some(messages),
                 ..Options::default()
             };
             Ok(Box::new(SamadhiApp::new(cc, options)))
         }),
     );
+    drop(guard);
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(err) if !fallback => {
+            log::warn!("starting with Vulkan/Metal failed ({err}); trying OpenGL");
+            restart_on_gl()
+        }
+        Err(err) => {
+            eprintln!("{APP_NAME} failed to start: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Runs this program again on the OpenGL renderer (the event loop can only
+/// be created once per process).
+fn restart_on_gl() -> ExitCode {
+    let status = std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env(GL_FALLBACK, "1")
+            .status()
+    });
+    match status {
+        Ok(s) if s.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("{APP_NAME} failed to start: {err}");
             ExitCode::FAILURE

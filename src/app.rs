@@ -85,11 +85,13 @@ impl Section {
 }
 
 /// Something waiting on the "save this draft?" question.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
     Quit,
     Open,
     New,
+    /// A file handed over by a later launch of the app.
+    OpenFile(PathBuf),
 }
 
 /// The right-click menu for a misspelled word.
@@ -101,6 +103,15 @@ struct SpellMenu {
 }
 
 #[derive(Debug)]
+struct Loading {
+    path: PathBuf,
+    /// Opened on request (rather than as the last file): report failures.
+    requested: bool,
+    since: Instant,
+    rx: mpsc::Receiver<anyhow::Result<Document>>,
+}
+
+#[derive(Debug)]
 struct Status {
     text: String,
     is_error: bool,
@@ -109,7 +120,7 @@ struct Status {
 
 /// How the app is started. [`Options::default`] is the normal desktop setup;
 /// tests switch off audio and use temporary folders.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Options {
     /// A file to open instead of the last one.
     pub file: Option<PathBuf>,
@@ -119,6 +130,9 @@ pub struct Options {
     /// Overrides where unsaved work is cached for crash recovery.
     pub recovery_dir: Option<PathBuf>,
     pub audio: bool,
+    /// Requests from later launches of the app (see [`crate::instance`]).
+    #[cfg(unix)]
+    pub messages: Option<mpsc::Receiver<crate::instance::Message>>,
 }
 
 impl Default for Options {
@@ -129,6 +143,8 @@ impl Default for Options {
             documents_dir: None,
             recovery_dir: None,
             audio: true,
+            #[cfg(unix)]
+            messages: None,
         }
     }
 }
@@ -146,6 +162,12 @@ pub struct SamadhiApp {
     /// An action waiting for the user to decide about an unsaved draft.
     pending: Option<Pending>,
     last_disk_check: Instant,
+    /// The document being read at start-up, off the interface thread so a
+    /// slow disk (say, a network drive just after boot) never holds up the
+    /// window. Its file, whether it was asked for explicitly, and the result.
+    loading: Option<Loading>,
+    #[cfg(unix)]
+    messages: Option<mpsc::Receiver<crate::instance::Message>>,
     timer: Timer,
 
     audio: AudioEngine,
@@ -245,6 +267,9 @@ impl SamadhiApp {
             recovery: Recovery::new(options.recovery_dir.clone()),
             pending: None,
             last_disk_check: Instant::now(),
+            loading: None,
+            #[cfg(unix)]
+            messages: options.messages,
             timer,
             audio,
             themes,
@@ -280,13 +305,12 @@ impl SamadhiApp {
         }
         // Open the requested file; else bring back unsaved work from a
         // crash; else reopen the last file; else start a fresh draft.
-        let last = app.settings.last_file.clone().filter(|p| p.is_file());
         if let Some(path) = options.file {
-            app.open_path(&path);
+            app.load_in_background(ctx, path, true);
         } else if !app.restore_draft()
-            && let Some(path) = last
+            && let Some(path) = app.settings.last_file.clone()
         {
-            app.open_path(&path);
+            app.load_in_background(ctx, path, false);
         }
         app
     }
@@ -560,9 +584,67 @@ impl SamadhiApp {
         dialog
     }
 
+    /// Starts reading `path` on a worker thread; it becomes the document
+    /// when it arrives (see [`Self::poll_background_work`]).
+    fn load_in_background(&mut self, ctx: &egui::Context, path: PathBuf, requested: bool) {
+        let (tx, rx) = mpsc::channel();
+        let (file, ctx) = (path.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Document::open(&file));
+            ctx.request_repaint();
+        });
+        self.loading = Some(Loading {
+            path,
+            requested,
+            since: Instant::now(),
+            rx,
+        });
+    }
+
+    fn finish_loading(&mut self, result: anyhow::Result<Document>, requested: bool) {
+        match result {
+            Ok(doc) => {
+                self.doc = doc;
+                self.recovery.clear();
+                self.remember_file();
+            }
+            // A last file that has gone (moved or deleted elsewhere) just
+            // means starting fresh.
+            Err(err) if requested => self.set_status(format!("{err:#}"), true),
+            Err(err) => log::info!("not reopening the last file: {err:#}"),
+        }
+    }
+
+    /// Requests from later launches: come to the front, and open the file
+    /// they were given (asking about an unsaved draft first).
+    #[cfg(unix)]
+    fn handle_messages(&mut self, ctx: &egui::Context) {
+        use crate::instance::Message;
+        let Some(rx) = &self.messages else {
+            return;
+        };
+        let messages: Vec<Message> = rx.try_iter().collect();
+        for message in messages {
+            if ctx.input(|i| i.viewport().minimized) == Some(true) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.ui_visible = true;
+            self.last_pointer = Instant::now();
+            if let Message::Open(path) = message {
+                let already_open = self.doc.path() == Some(path.as_path())
+                    || self.loading.as_ref().is_some_and(|l| l.path == path);
+                if !already_open && self.pending.is_none() {
+                    self.request(ctx, Pending::OpenFile(path));
+                }
+            }
+        }
+    }
+
     /// Opens `path` (the current document should be settled first).
     /// Returns whether it opened.
     fn open_path(&mut self, path: &Path) -> bool {
+        self.loading = None;
         self.checkpoint();
         match Document::open(path) {
             Ok(doc) => {
@@ -586,6 +668,7 @@ impl SamadhiApp {
 
     /// Starts a fresh, unsaved draft.
     fn new_document(&mut self) {
+        self.loading = None;
         self.checkpoint();
         self.doc = Document::default();
         self.recovery.clear();
@@ -766,6 +849,9 @@ impl SamadhiApp {
             Pending::Quit => self.quit(ctx),
             Pending::Open => self.open_with_dialog(),
             Pending::New => self.new_document(),
+            Pending::OpenFile(path) => {
+                self.open_path(&path);
+            }
         }
     }
 
@@ -780,7 +866,7 @@ impl SamadhiApp {
 
     /// The "save this draft?" dialog.
     fn unsaved_dialog(&mut self, ctx: &egui::Context) {
-        let Some(action) = self.pending else {
+        let Some(action) = self.pending.clone() else {
             return;
         };
         let dark = self.stage.dark();
@@ -841,6 +927,13 @@ impl SamadhiApp {
     // ----- per-frame input ----------------------------------------------------
 
     fn poll_background_work(&mut self, ctx: &egui::Context) {
+        if let Some(loading) = &self.loading
+            && let Ok(result) = loading.rx.try_recv()
+        {
+            let requested = loading.requested;
+            self.loading = None;
+            self.finish_loading(result, requested);
+        }
         if let Some(rx) = &self.thumbs_rx {
             while let Ok((i, image)) = rx.try_recv() {
                 if let Some(slot) = self.thumbs.get_mut(i) {
@@ -1599,7 +1692,31 @@ impl SamadhiApp {
         }
     }
 
-    /// Word count, centred under the page.
+    /// While a slow document is still on its way, a quiet note saying so.
+    fn loading_hint(&self, ctx: &egui::Context, page: Rect) {
+        let Some(loading) = &self.loading else {
+            return;
+        };
+        let waited = loading.since.elapsed();
+        let delay = Duration::from_millis(400);
+        if waited < delay {
+            ctx.request_repaint_after(delay.saturating_sub(waited));
+            return;
+        }
+        let name = loading
+            .path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        egui::Area::new(Id::unique("loading-hint"))
+            .order(egui::Order::Middle)
+            .interactable(false)
+            .fixed_pos(page.min + PAGE_PADDING)
+            .show(ctx, |ui| {
+                let ink = self.stage.ink().gamma_multiply(0.5);
+                caption(ui, &format!("Opening {name}…"), 13.0, ink, 0.2);
+            });
+    }
+
     /// Word count, centred under the page, with the selection's count
     /// beside it while text is highlighted. It fades with the interface,
     /// but stays visible while something is selected.
@@ -1665,6 +1782,8 @@ impl eframe::App for SamadhiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_background_work(&ctx);
+        #[cfg(unix)]
+        self.handle_messages(&ctx);
         self.handle_shortcuts(&ctx);
         self.handle_close_request(&ctx);
         self.keep_fullscreen(&ctx);
@@ -1736,7 +1855,12 @@ impl eframe::App for SamadhiApp {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
         self.paint_page(&ctx, ui.painter(), page, fade);
-        self.text_area(ui, page);
+        if self.loading.is_some() {
+            // Nothing to type into until the document arrives.
+            self.loading_hint(&ctx, page);
+        } else {
+            self.text_area(ui, page);
+        }
 
         if fade > 0.0 {
             self.dock(&ctx, screen, page, fade);
@@ -1922,7 +2046,22 @@ mod ui_tests {
             documents_dir: Some(dir.join("docs")),
             recovery_dir: Some(dir.join("recovery")),
             audio: false,
+            #[cfg(unix)]
+            messages: None,
         }
+    }
+
+    /// Waits for the document being opened at start-up to arrive.
+    fn settle(h: &mut Harness<'_, SamadhiApp>) {
+        for _ in 0..500 {
+            h.step();
+            if h.state().loading.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(h.state().loading.is_none(), "document never arrived");
+        h.run_steps(2);
     }
 
     /// Runs the real app headlessly with no audio and throwaway folders.
@@ -1932,6 +2071,7 @@ mod ui_tests {
             .with_size(vec2(1600.0, 1000.0))
             .build_eframe(move |cc| SamadhiApp::new(cc, options));
         harness.run_steps(3);
+        settle(&mut harness);
         harness
     }
 
@@ -2033,7 +2173,7 @@ mod ui_tests {
         let mut h = Harness::builder()
             .with_size(vec2(1600.0, 1000.0))
             .build_eframe(move |cc| SamadhiApp::new(cc, options));
-        h.run_steps(2);
+        settle(&mut h);
         type_and_pause(&mut h, " more");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "Once more");
         assert!(!h.state().doc.is_dirty());
@@ -2052,7 +2192,7 @@ mod ui_tests {
         let mut h = Harness::builder()
             .with_size(vec2(1600.0, 1000.0))
             .build_eframe(move |cc| SamadhiApp::new(cc, options));
-        h.run_steps(2);
+        settle(&mut h);
         h
     }
 
@@ -2085,6 +2225,38 @@ mod ui_tests {
             std::fs::read_to_string(copy).unwrap(),
             "rewritten on the Mac"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_from_a_second_launch_open_here_after_asking_about_a_draft() {
+        use crate::instance::Message;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("from-the-file-manager.md");
+        std::fs::write(&path, "opened by a second launch").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let options = Options {
+            messages: Some(rx),
+            ..options(dir.path(), None)
+        };
+        let mut h = Harness::builder()
+            .with_size(vec2(1600.0, 1000.0))
+            .build_eframe(move |cc| SamadhiApp::new(cc, options));
+        settle(&mut h);
+        type_and_pause(&mut h, "an unsaved draft");
+
+        tx.send(Message::Open(path.clone())).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.state().pending, Some(Pending::OpenFile(path.clone())));
+        h.get_by_label("Don't save").click();
+        h.run_steps(3);
+        assert_eq!(h.state().doc.path(), Some(path.as_path()));
+        assert_eq!(h.state().doc.text, "opened by a second launch");
+
+        // Asking for the file that is already open just shows the app.
+        tx.send(Message::Open(path.clone())).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.state().pending, None);
     }
 
     #[test]
@@ -2253,7 +2425,7 @@ mod ui_tests {
         let mut h = Harness::builder()
             .with_size(vec2(1200.0, 800.0))
             .build_eframe(move |cc| SamadhiApp::new(cc, options));
-        h.run_steps(3);
+        settle(&mut h);
         assert_eq!(h.state().doc.text, "one two three");
         assert_eq!(h.state().doc.word_count(), 3);
     }
@@ -2316,6 +2488,7 @@ mod ui_tests {
             .with_size(vec2(1600.0, 900.0))
             .wgpu()
             .build_eframe(move |cc| SamadhiApp::new(cc, options));
+        settle(&mut h);
         h.state_mut().settings.spell_check = true;
         let ctx = h.ctx.clone();
         h.state_mut().load_spell_checker(&ctx);
