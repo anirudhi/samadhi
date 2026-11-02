@@ -55,8 +55,6 @@ pub struct Settings {
     /// Where new documents are created (default: a `Samadhi` folder in
     /// Google Drive when it is installed, else `~/Documents/Samādhi`).
     pub documents_dir: Option<PathBuf>,
-    /// Extension for new documents (`md` by default).
-    pub default_extension: String,
     /// Length of the focus timer, in minutes.
     pub timer_minutes: u32,
 }
@@ -81,7 +79,6 @@ impl Default for Settings {
             last_file: None,
             recent_files: Vec::new(),
             documents_dir: None,
-            default_extension: "md".to_owned(),
             timer_minutes: crate::timer::DEFAULT_MINUTES,
         }
     }
@@ -156,23 +153,12 @@ impl Settings {
         self.page_opacity = finite_or(self.page_opacity, 0.0).clamp(0.0, 1.0);
         self.music_volume = finite_or(self.music_volume, 0.6).clamp(0.0, 1.0);
         self.click_volume = finite_or(self.click_volume, 0.7).clamp(0.0, 1.0);
-        // Letters and digits only: a hand-edited ". md" or "md/" becomes
-        // "md", never part of a file name it would mangle.
-        self.default_extension = self
-            .default_extension
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .collect::<String>()
-            .to_ascii_lowercase();
         self.timer_minutes = self
             .timer_minutes
             .clamp(crate::timer::MIN_MINUTES, crate::timer::MAX_MINUTES);
         let mut seen = std::collections::HashSet::new();
         self.recent_files.retain(|p| seen.insert(p.clone()));
         self.recent_files.truncate(RECENT_FILES);
-        if self.default_extension.is_empty() {
-            "md".clone_into(&mut self.default_extension);
-        }
         if let Some(p) = self.page {
             let ok = [p.x, p.y, p.width, p.height].iter().all(|v| v.is_finite());
             if !ok || p.width <= 0.0 || p.height <= 0.0 {
@@ -244,7 +230,6 @@ mod tests {
         fs::write(&path, "font_size = 30.0\n").unwrap();
         let s = Settings::load_or_default(Some(&path));
         assert!((s.font_size - 30.0).abs() < f32::EPSILON);
-        assert_eq!(s.default_extension, "md");
 
         fs::write(&path, "this is = = not toml").unwrap();
         assert_eq!(Settings::load_or_default(Some(&path)), Settings::default());
@@ -295,7 +280,6 @@ mod tests {
             font_size: 1000.0,
             page_opacity: -3.0,
             music_volume: f32::NAN,
-            default_extension: " .TXT ".into(),
             page: Some(PageRect {
                 x: 0.0,
                 y: 0.0,
@@ -308,7 +292,6 @@ mod tests {
         assert!((s.font_size - MAX_FONT_SIZE).abs() < f32::EPSILON);
         assert!(s.page_opacity.abs() < f32::EPSILON);
         assert!((s.music_volume - 0.6).abs() < f32::EPSILON);
-        assert_eq!(s.default_extension, "txt");
         assert_eq!(s.page, None);
     }
 }

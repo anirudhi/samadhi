@@ -21,6 +21,7 @@ pub mod macos;
 pub mod markdown;
 pub mod page;
 pub mod recovery;
+pub mod saver;
 pub mod scene;
 pub mod settings;
 pub mod spell;

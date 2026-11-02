@@ -5,11 +5,39 @@ becomes its notes on GitHub.
 
 ## Unreleased
 
+- **Always Markdown:** every document is saved as `.md`. Other plain-text
+  files still open. When you edit one (`.txt`, or an older document with
+  another extension), its text goes to a `.md` beside it and the original
+  is left untouched. An existing `.md` of the same name is never
+  replaced: the new file gets a free name such as `Essay (2).md`. Save As
+  always ends in `.md`, and the `default_extension` setting is gone.
+- **Text size controls:** smaller and larger now sit side by side, as a
+  small and a large letter A in your writing font, with a quiet "Reset"
+  beside them.
+- **Fixed:** text could vanish or turn into garbled glyphs for a moment
+  after switching themes, until you clicked. egui empties its font atlas
+  when it fills up, and the editor kept showing text drawn against the
+  old one.
 - **Recent files:** hovering the open button lists the last eight files
   you opened, newest first; click one to reopen it.
 - **Frosted sheet:** the sheet behind the text is now frosted glass. The
   slider blurs the scene behind the page in, then whitens it towards
   paper. Snow, stars and other motes turn into soft glows behind it.
+- **Fixed the long hangs while writing:** saving ran on the interface
+  thread, and on an rclone Google Drive mount a save could wait up to a
+  minute for an earlier upload of the same file to finish. Now:
+  - Files are written by a background writer, so a slow or stuck drive
+    can never freeze the window. If a save fails, Samādhi says so and
+    tries again.
+  - Every pause in typing goes straight to a local recovery cache, one
+    slot per document, so nothing is lost even if the app closes while a
+    drive is stuck. That text is restored, and saved, next time.
+  - Saves of the same file are merged and spaced at least 15 seconds
+    apart (Ctrl+S, switching documents and quitting save at once).
+    Uploads no longer pile up, overlap and retry.
+  - On a FUSE mount (rclone and the like), files are rewritten in place.
+    Drive then updates the one file and keeps its version history,
+    instead of a brand-new file appearing with every save.
 - **No more freezes from files or dialogs:** the open and save dialogs no
   longer block the app, and are attached to its window so they can't open
   hidden behind it. Files open, and the check for changes from other

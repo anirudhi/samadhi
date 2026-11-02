@@ -29,9 +29,7 @@ pub enum Icon {
     Open,
     Save,
     SaveAs,
-    Smaller,
     DefaultSize,
-    Larger,
     Motion,
     Markdown,
     SpellCheck,
@@ -41,7 +39,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 21] = [
         Self::Font,
         Self::Size,
         Self::Picture,
@@ -56,9 +54,7 @@ impl Icon {
         Self::Open,
         Self::Save,
         Self::SaveAs,
-        Self::Smaller,
         Self::DefaultSize,
-        Self::Larger,
         Self::Motion,
         Self::Markdown,
         Self::SpellCheck,
@@ -88,9 +84,7 @@ impl Icon {
             Self::Open => lucide!("folder-open"),
             Self::Save => lucide!("save"),
             Self::SaveAs => lucide!("file-pen"),
-            Self::Smaller => lucide!("a-arrow-down"),
             Self::DefaultSize => lucide!("rotate-ccw"),
-            Self::Larger => lucide!("a-arrow-up"),
             Self::Motion => lucide!("wind"),
             Self::Markdown => lucide!("heading"),
             Self::SpellCheck => lucide!("spell-check"),

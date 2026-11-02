@@ -141,7 +141,9 @@ proptest! {
     #[test]
     fn unmappable_text_in_a_legacy_file_falls_back_to_utf8(extra in editor_text(40)) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("legacy.txt");
+        // A Markdown file, so it is saved in place rather than moved to a
+        // new .md (which is always UTF-8).
+        let path = dir.path().join("legacy.md");
         fs::write(&path, b"caf\xE9").unwrap();
         let mut doc = Document::open(&path).unwrap();
         let extra: String = extra.chars().filter(|&c| c != '\0').collect();
@@ -166,7 +168,10 @@ proptest! {
         prop_assert_eq!(&doc.text, &expected);
         doc.mark_dirty();
         doc.save().unwrap();
-        prop_assert_eq!(Document::open(&path).unwrap().text, expected);
+        // Saved as Markdown beside the .txt.
+        let md = dir.path().join("mixed.md");
+        prop_assert_eq!(doc.path(), Some(md.as_path()));
+        prop_assert_eq!(Document::open(doc.path().unwrap()).unwrap().text, expected);
     }
 
     /// Opening arbitrary bytes never panics. Whatever opens, saves, and

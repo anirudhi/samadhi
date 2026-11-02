@@ -95,6 +95,38 @@ impl Stall {
             self.phase.describe()
         )
     }
+
+    /// Whether the interface thread is merely idle, waiting for input or
+    /// window events (for instance while the window is hidden, when no
+    /// frames are drawn), rather than blocked. Linux only; elsewhere
+    /// `false`.
+    pub fn is_idle(&self) -> bool {
+        self.phase == Phase::Outside && main_thread_wait().is_some_and(|w| is_event_wait(&w))
+    }
+}
+
+/// What the main thread is waiting in, from the kernel (Linux only).
+pub fn main_thread_wait() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let main = std::process::id();
+        std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
+            .ok()
+            .map(|w| w.trim().to_owned())
+            .filter(|w| !w.is_empty() && w != "0")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Kernel waits that mean "waiting for events" (the event loop is idle).
+fn is_event_wait(wchan: &str) -> bool {
+    matches!(
+        wchan,
+        "ep_poll" | "do_epoll_wait" | "do_sys_poll" | "do_select"
+    )
 }
 
 impl Watchdog {
@@ -119,8 +151,18 @@ impl Watchdog {
                 loop {
                     std::thread::sleep(CHECK_EVERY);
                     match watcher.check() {
+                        // Not drawing because nothing asks it to (a hidden
+                        // window): not a freeze.
+                        Some(stall) if stall.is_idle() => {}
                         Some(stall) if reported != Some(stall.phase) => {
-                            log::warn!("{}", stall.describe());
+                            match main_thread_wait() {
+                                Some(wait) => {
+                                    log::warn!("{} (waiting in {wait})", stall.describe());
+                                }
+                                None => {
+                                    log::warn!("{}", stall.describe());
+                                }
+                            }
                             reported = Some(stall.phase);
                         }
                         Some(_) => {}
@@ -211,6 +253,19 @@ mod tests {
         assert!(stall.describe().contains("saving"));
         w.end_frame(None);
         assert_eq!(w.check(), None);
+    }
+
+    #[test]
+    fn event_waits_are_idle_and_others_are_not() {
+        assert!(is_event_wait("ep_poll"));
+        assert!(!is_event_wait("fuse_wait_answer"));
+        assert!(!is_event_wait("drm_syncobj_array_wait_timeout"));
+        // Inside a slow frame the thread is never "idle", whatever it waits on.
+        let stall = Stall {
+            phase: Phase::Saving,
+            for_at_least: LONG,
+        };
+        assert!(!stall.is_idle());
     }
 
     #[test]

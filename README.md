@@ -13,7 +13,7 @@ move the mouse.
 New writing starts as a draft. Save it once to give it a name, and from then
 on it saves itself a moment after you stop typing. Unsaved drafts survive
 crashes and power cuts, and Samādhi reopens where you left off. Documents
-are plain text, saved as Markdown (`.md`) by default, with optional live
+are plain text, always saved as Markdown (`.md`), with optional live
 markdown styling.
 
 ## Features
@@ -25,18 +25,27 @@ markdown styling.
 - **Saving:**
   - A new document is an unsaved draft. Press Ctrl+S, or use the save
     button, to name it; the name is pre-filled from your first line.
-  - After that first save the file autosaves under a second after you pause.
-  - Opened files autosave the same way.
-  - Until a draft is saved it is continuously mirrored to a recovery cache
-    (`~/.local/share/samadhi/recovery/`). After a crash or forced shutdown it
-    is restored on the next launch.
+  - After that first save the file saves itself whenever you pause. Opened
+    files do the same.
+  - Saving happens in the background, so a slow or stuck drive (a network
+    or cloud mount, say) never freezes the window. Saves of one file are
+    spaced a few seconds apart, which keeps sync tools from being swamped;
+    Ctrl+S saves at once.
+  - Every pause is also mirrored straight away to a local recovery cache
+    (`~/.local/share/samadhi/recovery/`), one slot per document, until the
+    file is safely written. After a crash, a forced shutdown or a drive
+    that never finished saving, the text is restored on the next launch.
   - Quitting, starting a new document or opening a file with an unsaved
     draft asks whether to save it first.
   - The last saved file opens again at start-up.
+  - Everything is saved as Markdown. Other plain-text files still open
+    (`.txt`, and older documents with other extensions). The first time
+    you edit one, its text is saved to a `.md` beside it with the same
+    name, and the original is left untouched. If that name is taken, the
+    new file gets a free name such as `Essay (2).md`.
   - Hover the open button for your eight most recent files; click one to
     reopen it.
-  - Files open in the background and file dialogs never block the app, so
-    a slow or network drive can't freeze the window.
+  - Files open in the background and file dialogs never block the app.
 - **Google Drive, and writing on several computers:**
   - If Google Drive is synced to your computer, new documents go to a
     `Samadhi` folder in it (inside `Writing`, if your Drive has that
@@ -45,6 +54,9 @@ markdown styling.
     `~/GoogleDrive` or `~/Google Drive` on Linux.
   - When the open file changes on another computer, Samādhi picks up the
     new version within seconds of it syncing.
+  - On a Drive mounted with rclone (or another FUSE tool), files are
+    rewritten in place, so Drive keeps one file with its version history
+    rather than gaining a new file with every save.
   - If you have unsaved edits when that happens, neither version is lost:
     yours stays open and the other is saved beside it as
     `Name (conflicted copy).md`.
@@ -161,7 +173,8 @@ On macOS, use Cmd in place of Ctrl.
 
 Move the mouse to bring the dock back, then hover an icon to see its
 options. From top to bottom the dock holds: font (with the markdown and
-spell-check switches), text size, theme (with motion and the frosted
+spell-check switches), text size (a small and a large A, and Reset),
+theme (with motion and the frosted
 sheet), music, typing sounds, the focus timer, and the document (new,
 open with recent files, save, save as).
 
@@ -186,8 +199,6 @@ in them is set from the app, but you can edit the file by hand while
 Samādhi is closed:
 
 - `documents_dir` sets the folder new documents are saved in.
-- `default_extension` sets the extension for new documents (`md` by
-  default; letters and digits only).
 - `timer_minutes` is the focus timer's length (1 to 60).
 - `recent_files` is the list behind the open button (at most eight).
 
@@ -205,6 +216,12 @@ the time:
 
 `samadhi --help` prints its location. Please include it when reporting a
 problem.
+
+## Roadmap
+
+Plans for what comes next live in [`ROADMAP.md`](ROADMAP.md):
+- a signed Mac DMG and a website with downloads;
+- later, optional cloud saves with accounts, a web app and a phone app.
 
 ## Development
 
@@ -252,7 +269,8 @@ Every module has unit tests next to its code. On top of those:
 | --- | --- |
 | `app` | The interface: input, drawing, saving and dialogs |
 | `document` | Reading and writing plain-text and Markdown files |
-| `recovery` | The crash-recovery cache for unsaved drafts |
+| `saver` | Writes files on a background thread, spaced out and coalesced |
+| `recovery` | The local cache of unsaved work, one slot per document |
 | `markdown` | Live markdown styling |
 | `spell` | Spell checking and suggestions |
 | `stage` | Parallax, particles, vignette and the frosted sheet |

@@ -85,13 +85,34 @@ pub fn icon_button_bare(
 /// A word set in `font`; the selected one is in the accent colour with a
 /// small dot beneath it.
 pub fn text_choice(ui: &mut egui::Ui, text: &str, font: FontId, selected: bool) -> egui::Response {
-    let p = theme::current(ui);
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, p.ink);
-    let size = vec2(galley.size().x + 14.0, ICON_BUTTON);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = word(ui, text, font, selected, 0.0);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, text)
     });
+    response
+}
+
+/// A button that is a word or letter (`text`), set in `font` on the same
+/// baseline as its neighbours, named `label` for screen readers and in its
+/// tooltip. At least an icon button wide, so single letters line up.
+pub fn text_button(ui: &mut egui::Ui, text: &str, font: FontId, label: &str) -> egui::Response {
+    let response = word(ui, text, font, false, ICON_BUTTON);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    response.on_hover_text(label)
+}
+
+/// Draws `text` as a clickable word, its baseline at [`CHOICE_BASELINE`].
+fn word(
+    ui: &mut egui::Ui,
+    text: &str,
+    font: FontId,
+    selected: bool,
+    min_width: f32,
+) -> egui::Response {
+    let p = theme::current(ui);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, p.ink);
+    let size = vec2((galley.size().x + 14.0).max(min_width), ICON_BUTTON);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let color = if selected {
         p.accent
     } else if response.hovered() {

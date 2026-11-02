@@ -69,6 +69,26 @@ When proptest finds a failing input, it shrinks it to a minimal one and
 prints it. Keep that input as an ordinary `#[test]` beside the property,
 so the case is checked from then on.
 
+## Stuck drives
+
+`a_drive_that_never_answers_never_freezes_the_app` swaps the open file for
+a named pipe, which any read or write waits on forever. That's the extreme
+case of the rclone mount that held saves for up to a minute. The test then
+checks that:
+
+- typing, autosave and the check for outside changes keep every frame
+  short;
+- the text is in the recovery cache;
+- quitting closes the app within a few seconds anyway.
+
+The writer's own tests (`src/saver.rs`) cover the rest:
+
+- saves are coalesced and spaced;
+- urgent saves and flushing skip the wait;
+- a save that finishes after more typing leaves the newer text unsaved;
+- an outside change becomes a conflicted copy;
+- a failed save is reported.
+
 ## Regression tests from fuzzing
 
 These bugs were found by the fuzzers and are now fixed, each with a test:

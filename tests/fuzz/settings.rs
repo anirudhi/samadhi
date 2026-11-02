@@ -44,7 +44,7 @@ fn page() -> impl Strategy<Value = Option<PageRect>> {
 }
 
 prop_compose! {
-    fn settings(extension: BoxedStrategy<String>)(
+    fn settings()(
         page in page(),
         font_family in prop::option::of("\\PC{0,12}"),
         font_size in any_f32(),
@@ -62,7 +62,6 @@ prop_compose! {
         last_file in prop::option::of(path()),
         recent_files in prop::collection::vec(path(), 0..20),
         documents_dir in prop::option::of(path()),
-        default_extension in extension,
         timer_minutes in any::<u32>(),
     ) -> Settings {
         Settings {
@@ -83,7 +82,6 @@ prop_compose! {
             last_file,
             recent_files,
             documents_dir,
-            default_extension,
             timer_minutes,
         }
     }
@@ -98,8 +96,6 @@ fn check_in_range(s: &Settings) -> Result<(), TestCaseError> {
     prop_assert!(s.recent_files.len() <= RECENT_FILES);
     let unique: std::collections::HashSet<_> = s.recent_files.iter().collect();
     prop_assert_eq!(unique.len(), s.recent_files.len());
-    prop_assert!(!s.default_extension.is_empty());
-    prop_assert!(!s.default_extension.starts_with('.'));
     if let Some(p) = s.page {
         prop_assert!([p.x, p.y, p.width, p.height].iter().all(|v| v.is_finite()));
         prop_assert!(p.width > 0.0 && p.height > 0.0);
@@ -180,13 +176,13 @@ proptest! {
     }
 
     #[test]
-    fn sanitized_values_are_in_range(s in settings("\\PC{0,8}".boxed())) {
+    fn sanitized_values_are_in_range(s in settings()) {
         check_in_range(&s.sanitized())?;
     }
 
     /// What is saved loads back exactly.
     #[test]
-    fn save_then_load_round_trips(s in settings("[A-Za-z0-9]{0,6}".boxed())) {
+    fn save_then_load_round_trips(s in settings()) {
         let s = s.sanitized();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/settings.toml");
@@ -198,7 +194,7 @@ proptest! {
     /// Sanitising twice changes nothing more. (Extensions mixing spaces
     /// and dots are not idempotent: see the ignored test below.)
     #[test]
-    fn sanitizing_is_idempotent(s in settings("[a-zA-Z.]{0,4}".boxed())) {
+    fn sanitizing_is_idempotent(s in settings()) {
         let once = s.sanitized();
         prop_assert_eq!(once.clone().sanitized(), once);
     }
@@ -216,15 +212,16 @@ proptest! {
     }
 }
 
-/// A hand-edited extension like `". md"` keeps a leading space: dots are
-/// stripped after trimming, so the space they hid survives, and new
-/// documents would be named `Untitled. md`.
+/// Settings files from older versions may still name a default extension;
+/// new documents are always Markdown now, and the old key is ignored.
 #[test]
-fn extension_with_a_dot_and_a_space_is_cleaned() {
-    let s = Settings {
-        default_extension: ". md".to_owned(),
-        ..Settings::default()
-    }
-    .sanitized();
-    assert_eq!(s.default_extension, "md");
+fn an_old_default_extension_setting_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.toml");
+    std::fs::write(&path, "default_extension = \"omm\"\nfont_size = 20.0\n").unwrap();
+    let s = Settings::load_or_default(Some(&path));
+    assert!(
+        (s.font_size - 20.0).abs() < f32::EPSILON,
+        "the rest still loads"
+    );
 }

@@ -18,12 +18,13 @@ use eframe::egui::{
 use crate::audio::{self, AudioEngine, BuiltinClick, Music};
 use crate::background::{self, SceneLoader};
 use crate::catalog::{self, Catalog};
-use crate::document::{self, Document, SaveOutcome};
+use crate::document::{self, DiskVersion, Document, SaveOutcome};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::markdown;
 use crate::page::{self, Drag};
 use crate::recovery::Recovery;
+use crate::saver::{self, Saver};
 use crate::scene::ThemeKind;
 use crate::settings::{DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, PageRect, Settings};
 use crate::spell::SpellChecker;
@@ -32,8 +33,8 @@ use crate::theme;
 use crate::timer::{self, Timer};
 use crate::watchdog::{Phase, Watchdog};
 use crate::widgets::{
-    ICON_BUTTON, caption, icon_button, icon_button_bare, list_choice, slider, switch, text_choice,
-    thumb_button,
+    ICON_BUTTON, caption, icon_button, icon_button_bare, list_choice, slider, switch, text_button,
+    text_choice, thumb_button,
 };
 
 const DOCK_GAP: f32 = 28.0;
@@ -62,6 +63,12 @@ const FULLSCREEN_RETRY: Duration = Duration::from_secs(1);
 /// How often the open file is checked for changes made elsewhere (another
 /// app, or a sync from another device).
 const DISK_CHECK: Duration = Duration::from_secs(2);
+/// How long quitting waits for outstanding saves. If a drive is stuck the
+/// app closes anyway: the text is in the recovery cache, and is restored
+/// (and saved) next time.
+const QUIT_WAIT: Duration = Duration::from_secs(3);
+/// After a failed save, how long until trying again.
+const SAVE_RETRY: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -128,6 +135,8 @@ struct Loading {
     path: PathBuf,
     /// Opened on request (rather than as the last file): report failures.
     requested: bool,
+    /// Unsaved text recovered from a crash, to put back once it arrives.
+    recovered: Option<String>,
     since: Instant,
     rx: mpsc::Receiver<anyhow::Result<Document>>,
 }
@@ -194,6 +203,9 @@ pub struct Options {
     pub file_dialogs: bool,
     /// Watches for freezes (see [`crate::watchdog`]).
     pub watchdog: Watchdog,
+    /// The least time between two writes of the same file (see
+    /// [`crate::saver`]); tests use zero.
+    pub save_interval: Duration,
 }
 
 impl Default for Options {
@@ -208,6 +220,7 @@ impl Default for Options {
             messages: None,
             file_dialogs: true,
             watchdog: Watchdog::new(),
+            save_interval: saver::MIN_INTERVAL,
         }
     }
 }
@@ -228,7 +241,16 @@ pub struct SamadhiApp {
     last_disk_check: Instant,
     /// A look at the open file's size and time, taken on a worker thread so
     /// a stalled (network) drive can never freeze the interface.
-    disk_probe: Option<mpsc::Receiver<(PathBuf, std::io::Result<std::fs::Metadata>)>>,
+    disk_probe: Option<mpsc::Receiver<Option<DiskVersion>>>,
+    /// Where new documents go, worked out once at start (finding Google
+    /// Drive looks at the disk).
+    documents_dir: PathBuf,
+    /// Writes files on another thread (see [`crate::saver`]).
+    saver: Saver,
+    /// When to try again after a save failed.
+    save_retry: Option<Instant>,
+    /// Say "Saved" once the save asked for with Ctrl+S is written.
+    announce_save: bool,
     /// The document being read at start-up, off the interface thread so a
     /// slow disk (say, a network drive just after boot) never holds up the
     /// window. Its file, whether it was asked for explicitly, and the result.
@@ -279,8 +301,16 @@ pub struct SamadhiApp {
     /// The document was swapped for another (opened, new, reloaded): the
     /// editor's undo history belongs to the old one.
     new_text: bool,
-    /// The editor's laid-out text and what it was made from.
-    layout_cache: Option<(u64, std::sync::Arc<egui::Galley>)>,
+    /// The editor's styled text (the markdown work, slow for a long
+    /// document) and what it was made from. Only the styling is kept, not
+    /// the laid-out text: that points into egui's font atlas, which egui
+    /// clears now and then (when it fills up, or the scale changes), and a
+    /// kept copy would then show blank or garbled glyphs.
+    layout_cache: Option<(u64, egui::text::LayoutJob)>,
+    /// The editor's text as last shown (tests check it is egui's current
+    /// layout, not one from before the atlas was emptied).
+    #[cfg(test)]
+    last_galley: Option<std::sync::Arc<egui::Galley>>,
     /// The document's word count and the text it was counted from.
     word_cache: std::cell::Cell<Option<(u64, usize)>>,
 
@@ -340,6 +370,7 @@ impl SamadhiApp {
         };
 
         let timer = Timer::new(settings.timer_minutes);
+        let documents_dir = settings.documents_dir();
         let mut app = Self {
             settings,
             settings_path: options.settings_path,
@@ -350,6 +381,13 @@ impl SamadhiApp {
             pending: None,
             last_disk_check: Instant::now(),
             disk_probe: None,
+            documents_dir,
+            saver: Saver::with_interval(options.save_interval, {
+                let ctx = ctx.clone();
+                move || ctx.request_repaint()
+            }),
+            save_retry: None,
+            announce_save: false,
             loading: None,
             dialog_request: None,
             dialog: None,
@@ -382,6 +420,8 @@ impl SamadhiApp {
             spell_menu: None,
             new_text: false,
             layout_cache: None,
+            #[cfg(test)]
+            last_galley: None,
             word_cache: std::cell::Cell::new(None),
             allow_close: false,
             last_title: String::new(),
@@ -398,7 +438,7 @@ impl SamadhiApp {
         // crash; else reopen the last file; else start a fresh draft.
         if let Some(path) = options.file {
             app.load_in_background(ctx, path, true);
-        } else if !app.restore_draft()
+        } else if !app.restore_draft(ctx)
             && let Some(path) = app.settings.last_file.clone()
         {
             app.load_in_background(ctx, path, false);
@@ -649,16 +689,14 @@ impl SamadhiApp {
     // ----- documents --------------------------------------------------------
 
     fn file_dialog(&self) -> rfd::AsyncFileDialog {
-        // Next to the current file, else in the documents folder (made on
-        // first use), else the home folder.
-        let documents = self.settings.documents_dir();
+        // Next to the current file, else in the documents folder. Nothing
+        // here touches the disk (which may be a slow network drive); saving
+        // creates the folder if needed.
         let dir = self
             .doc
             .path()
             .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .or_else(|| std::fs::create_dir_all(&documents).ok().map(|()| documents))
-            .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()));
+            .map_or_else(|| self.documents_dir.clone(), Path::to_path_buf);
         let mut dialog = rfd::AsyncFileDialog::new();
         // macOS merges the filters into one list of allowed extensions,
         // where "*" matches nothing: any other text file (and the name
@@ -669,10 +707,7 @@ impl SamadhiApp {
                 .add_filter("Markdown and text", document::TEXT_EXTENSIONS)
                 .add_filter("All files", &["*"]);
         }
-        if let Some(dir) = dir {
-            dialog = dialog.set_directory(dir);
-        }
-        dialog
+        dialog.set_directory(dir)
     }
 
     /// Starts reading `path` on a worker thread; it becomes the document
@@ -687,6 +722,7 @@ impl SamadhiApp {
         self.loading = Some(Loading {
             path,
             requested,
+            recovered: None,
             since: Instant::now(),
             rx,
         });
@@ -697,7 +733,6 @@ impl SamadhiApp {
             Ok(doc) => {
                 self.doc = doc;
                 self.new_text = true;
-                self.recovery.clear();
                 self.remember_file();
             }
             Err(err) => {
@@ -719,7 +754,7 @@ impl SamadhiApp {
     /// Settles the current document, then opens `path` without holding up
     /// the interface (it may be on a slow or network drive).
     fn open_in_background(&mut self, ctx: &egui::Context, path: PathBuf) {
-        self.checkpoint();
+        self.checkpoint(true);
         self.load_in_background(ctx, path, true);
     }
 
@@ -771,7 +806,7 @@ impl SamadhiApp {
         match kind {
             DialogKind::Open => self.open_in_background(ctx, path),
             DialogKind::SaveAs { then } => {
-                if self.save_to(path)
+                if self.save_to(&path)
                     && let Some(action) = then
                 {
                     self.perform(ctx, action);
@@ -813,37 +848,75 @@ impl SamadhiApp {
     /// Starts a fresh, unsaved draft.
     fn new_document(&mut self) {
         self.loading = None;
-        self.checkpoint();
+        self.checkpoint(true);
         self.doc = Document::default();
         self.new_text = true;
-        self.recovery.clear();
         self.last_edit = None;
     }
 
-    /// Brings back unsaved work left behind by a crash or shutdown.
-    fn restore_draft(&mut self) -> bool {
+    /// Brings back unsaved work left behind by a crash, a shutdown or a
+    /// save that never finished: the most recent first. A file's text is
+    /// put back once the file has been read in the background.
+    fn restore_draft(&mut self, ctx: &egui::Context) -> bool {
         let Some(draft) = self.recovery.load() else {
             return false;
         };
-        let file = draft.path.as_deref().filter(|p| p.is_file());
-        self.doc = match file.map(Document::open) {
-            Some(Ok(doc)) => doc,
-            _ => Document::default(),
-        };
-        self.doc.text = draft.text;
+        match draft.path {
+            Some(path) => {
+                self.load_in_background(ctx, path, false);
+                if let Some(loading) = &mut self.loading {
+                    loading.recovered = Some(draft.text);
+                }
+            }
+            None => self.put_back(
+                Document::default(),
+                draft.text,
+                "Recovered your unsaved draft",
+            ),
+        }
+        true
+    }
+
+    /// The file that recovered text belongs to has been read.
+    fn finish_recovering(&mut self, path: &Path, result: anyhow::Result<Document>, text: String) {
+        match result {
+            // The file already holds this text: it was saved after all
+            // (the app closed before hearing back). Nothing to recover.
+            Ok(doc) if doc.text == text => {
+                self.recovery.clear_for(Some(path));
+                self.doc = doc;
+                self.new_text = true;
+                self.remember_file();
+            }
+            Ok(doc) => {
+                let message = format!("Recovered unsaved changes to {}", doc.display_name());
+                self.put_back(doc, text, &message);
+                self.remember_file();
+                // `remember_file` stops the autosave clock; restart it so the
+                // recovered text is written to the file.
+                self.last_edit = Some(Instant::now());
+            }
+            // The file has gone: keep the text as a draft.
+            Err(_) => {
+                self.recovery.clear_for(Some(path));
+                self.put_back(
+                    Document::default(),
+                    text,
+                    "Recovered your unsaved text (its file could not be opened)",
+                );
+            }
+        }
+    }
+
+    /// Opens `doc` with recovered `text` in it, unsaved.
+    fn put_back(&mut self, doc: Document, text: String, message: &str) {
+        self.doc = doc;
+        self.doc.text = text;
         self.new_text = true;
         self.doc.mark_dirty();
-        let message = match self.doc.path() {
-            Some(_) => format!("Recovered unsaved changes to {}", self.doc.display_name()),
-            None => "Recovered your unsaved draft".to_owned(),
-        };
         self.set_status(message, false);
-        if self.doc.path().is_some() {
-            self.remember_file();
-        }
         // Saved files catch up via autosave; drafts are re-cached.
         self.last_edit = Some(Instant::now());
-        true
     }
 
     /// Records the current file so the app reopens it next time.
@@ -861,74 +934,186 @@ impl SamadhiApp {
         self.doc.path().is_none() && !self.doc.text.trim().is_empty()
     }
 
-    /// Makes sure no work can be lost: saved files are written to disk,
-    /// drafts (and edits that failed to save) go to the recovery cache.
-    /// Returns `false` if the text is only in the recovery cache.
-    fn checkpoint(&mut self) -> bool {
+    /// Makes sure no work can be lost. The text goes to the local recovery
+    /// cache straight away (fast, and safe from a stuck drive), and a saved
+    /// file is queued to be written in the background. `urgent` skips the
+    /// spacing between writes (Ctrl+S, switching documents, quitting).
+    /// Returns whether the text is safe somewhere.
+    fn checkpoint(&mut self, urgent: bool) -> bool {
         self.last_edit = None;
         if !self.doc.is_dirty() {
             return true;
         }
-        if self.doc.path().is_some() {
-            if self.write_file() {
-                self.recovery.clear();
-                return true;
-            }
-        } else if self.doc.text.trim().is_empty() {
-            self.recovery.clear();
+        if self.doc.path().is_none() && self.doc.text.trim().is_empty() {
+            self.recovery.clear_for(None);
             return true;
         }
-        let result = self.recovery.store(&self.doc.text, self.doc.path());
-        self.report(result);
-        false
+        let before = self.doc.path().map(Path::to_path_buf);
+        let job = self.doc.save_job();
+        let stored = self.recovery.store(&self.doc.text, self.doc.path());
+        let safe = self.report(stored).is_some();
+        if let Some(job) = job {
+            if before.as_deref() != Some(job.path.as_path()) {
+                self.moved_to_markdown(before.as_deref(), &job.path);
+            }
+            self.saver.save(job, urgent);
+        }
+        safe
+    }
+
+    /// The first save of a document opened from a file that isn't Markdown
+    /// (an `.omm` or `.txt`) goes to a new `.md` beside it.
+    fn moved_to_markdown(&mut self, from: Option<&Path>, to: &Path) {
+        // The unsaved text now lives in the new file's recovery slot.
+        self.recovery.clear_for(from);
+        if let Some(from) = from {
+            self.settings.recent_files.retain(|p| p != from);
+            let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+            self.set_status(
+                format!(
+                    "Saving as {} (the original {} is kept as it was)",
+                    name(to).unwrap_or_default(),
+                    name(from).unwrap_or_default()
+                ),
+                false,
+            );
+        }
+        let last_edit = self.last_edit;
+        self.remember_file();
+        self.last_edit = last_edit;
+    }
+
+    /// Takes in finished saves: marks the text saved (if it hasn't changed
+    /// since), clears its recovery slot, and says what happened.
+    fn collect_saves(&mut self) {
+        for report in self.saver.reports() {
+            match report.result {
+                Ok(saved) => {
+                    let current = self.doc.path() == Some(saved.path.as_path())
+                        || self.doc.path() == Some(saved.requested.as_path());
+                    if current {
+                        self.doc.saved(&saved);
+                    }
+                    if current && saved.path != saved.requested {
+                        // The new .md's name was taken: it went to a free one.
+                        self.recovery.clear_for(Some(&saved.requested));
+                        self.settings.recent_files.retain(|p| *p != saved.requested);
+                        let last_edit = self.last_edit;
+                        self.remember_file();
+                        self.last_edit = last_edit;
+                        let name =
+                            |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+                        self.set_status(
+                            format!(
+                                "Saved as {}, as {} already exists",
+                                name(&saved.path).unwrap_or_default(),
+                                name(&saved.requested).unwrap_or_default()
+                            ),
+                            false,
+                        );
+                    }
+                    // Safely in the file: drop its slot, unless the open
+                    // document has newer unsaved text in it.
+                    if !current || !self.doc.is_dirty() {
+                        self.recovery.clear_for(Some(&saved.path));
+                        if current {
+                            // A draft that was just named lives on in the file.
+                            self.recovery.clear_for(None);
+                        }
+                    }
+                    if let Some(copy) = &saved.conflict_copy {
+                        let name = copy.file_name().map(|n| n.to_string_lossy().into_owned());
+                        self.set_status(
+                            format!(
+                                "This file was also changed elsewhere. That version is kept as {}",
+                                name.unwrap_or_default()
+                            ),
+                            false,
+                        );
+                    } else if saved.outcome == SaveOutcome::SavedAsUtf8 {
+                        self.set_status(
+                            "Saved as UTF-8: the text has characters the file's old encoding cannot hold",
+                            false,
+                        );
+                    } else if current && self.announce_save && !self.doc.is_dirty() {
+                        self.set_status("Saved", false);
+                    }
+                    if current && !self.doc.is_dirty() {
+                        self.announce_save = false;
+                    }
+                }
+                Err(err) if err == saver::SUPERSEDED => {}
+                Err(err) => {
+                    let name = report
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned());
+                    log::warn!("saving {} failed: {err}", report.path.display());
+                    self.set_status(
+                        format!(
+                            "Could not save {}: {err}. Your text is safe; trying again shortly.",
+                            name.unwrap_or_default()
+                        ),
+                        true,
+                    );
+                    self.save_retry = Some(Instant::now() + SAVE_RETRY);
+                }
+            }
+        }
+    }
+
+    /// Before closing: waits (briefly) for outstanding saves. Whatever
+    /// doesn't finish stays in the recovery cache for next time.
+    fn finish_saving(&mut self) {
+        if !self.saver.busy() {
+            return;
+        }
+        if !self.saver.flush(QUIT_WAIT) {
+            log::warn!("closing with a save still in progress; the text is in the recovery cache");
+        }
+        self.collect_saves();
     }
 
     /// Picks up changes made to the open file elsewhere, such as edits
-    /// synced from another device. A document with no unsaved edits simply
-    /// reloads. If there are unsaved edits too, the other version is kept
-    /// beside it as a conflicted copy, so neither is lost.
+    /// synced from another device, reading the file right away. (The app
+    /// does this off the interface thread: see [`Self::probe_disk`].)
+    #[cfg(test)]
     fn sync_with_disk(&mut self) {
         self.last_disk_check = Instant::now();
-        let Some(mut theirs) = self.doc.changed_on_disk() else {
-            return;
-        };
-        if !self.doc.is_dirty() {
+        if let Some(found) = self.doc.disk_probe().and_then(|p| p.run()) {
+            self.take_disk_version(found);
+        }
+    }
+
+    /// A version of the open file found on disk. With no unsaved edits it
+    /// replaces the text; with unsaved edits, the next save keeps it as a
+    /// conflicted copy, so neither is lost.
+    fn take_disk_version(&mut self, found: DiskVersion) {
+        if let Some(theirs) = self.doc.take_disk_version(found) {
             self.doc = theirs;
             self.new_text = true;
             self.last_edit = None;
             self.set_status("Updated with changes made elsewhere", false);
-            return;
-        }
-        let Some(path) = self.doc.path() else {
-            return;
-        };
-        let copy = document::conflict_copy_path(path);
-        let result = theirs.save_as(&copy).map(|_| {
-            format!(
-                "This file was also changed elsewhere. That version is kept as {}",
-                theirs.display_name()
-            )
-        });
-        if let Some(message) = self.report(result) {
-            self.set_status(message, false);
         }
     }
 
     /// Every few seconds, checks off the interface thread whether the open
-    /// file was changed elsewhere; only then is it read (see
-    /// [`Self::sync_with_disk`]).
+    /// file was changed elsewhere, reading it there only if so.
     fn probe_disk(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.doc.path().map(Path::to_path_buf) else {
+        let Some(probe) = self.doc.disk_probe() else {
             self.disk_probe = None;
             return;
         };
         if let Some(rx) = &self.disk_probe {
             match rx.try_recv() {
-                Ok((probed, meta)) => {
+                Ok(found) => {
                     self.disk_probe = None;
-                    let changed = meta.is_ok_and(|m| !self.doc.disk_matches(&m));
-                    if probed == path && changed {
-                        self.sync_with_disk();
+                    // Not while a save is on its way: what's on disk may be
+                    // our own text, half-reported.
+                    if let Some(found) = found
+                        && !self.saver.busy()
+                    {
+                        self.take_disk_version(found);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => return, // still looking
@@ -942,8 +1127,7 @@ impl SamadhiApp {
             std::thread::Builder::new()
                 .name("disk-probe".into())
                 .spawn(move || {
-                    let meta = std::fs::metadata(&path);
-                    let _ = tx.send((path, meta));
+                    let _ = tx.send(probe.run());
                     ctx.request_repaint();
                 })
                 .expect("spawning a thread should not fail");
@@ -952,32 +1136,15 @@ impl SamadhiApp {
         ctx.request_repaint_after(DISK_CHECK);
     }
 
-    /// Writes a saved document to its file. Returns whether it worked.
-    fn write_file(&mut self) -> bool {
-        // Never write over a version from elsewhere that hasn't been seen.
-        self.sync_with_disk();
-        match self.doc.save() {
-            Ok(SaveOutcome::Saved) => true,
-            Ok(SaveOutcome::SavedAsUtf8) => {
-                self.set_status(
-                    "Saved as UTF-8: the text has characters the file's old encoding cannot hold",
-                    false,
-                );
-                true
-            }
-            Err(err) => {
-                self.set_status(format!("Could not save: {err:#}"), true);
-                false
-            }
-        }
-    }
-
     /// Ctrl+S or the save button: names a draft the first time, after
     /// which the file saves itself.
     fn save(&mut self) {
         if self.doc.path().is_none() {
             self.save_as();
-        } else if self.checkpoint() {
+        } else if self.doc.is_dirty() {
+            self.announce_save = true;
+            self.checkpoint(true);
+        } else {
             self.set_status("Saved", false);
         }
     }
@@ -990,31 +1157,28 @@ impl SamadhiApp {
 
     /// The name the save dialog suggests.
     fn save_as_name(&self) -> String {
-        match self.doc.path().and_then(Path::file_name) {
-            Some(n) => n.to_string_lossy().into_owned(),
-            None => suggested_file_name(&self.doc.text, &self.settings.default_extension),
+        match self.doc.path().map(document::markdown_path) {
+            Some(path) => path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            None => suggested_file_name(&self.doc.text, "md"),
         }
     }
 
     /// Saves to `path` (from the save dialog) and keeps autosaving there.
-    /// Returns whether it worked.
-    fn save_to(&mut self, mut path: PathBuf) -> bool {
-        let ext = self.settings.default_extension.clone();
-        if path.extension().is_none() {
-            path.set_extension(&ext);
-        }
-        match self.doc.save_as(&path) {
-            Ok(_) => {
-                self.recovery.clear();
-                self.remember_file();
-                self.set_status(format!("Saved as {}", self.doc.display_name()), false);
-                true
-            }
-            Err(err) => {
-                self.set_status(format!("Could not save: {err:#}"), true);
-                false
-            }
-        }
+    /// The file is written in the background; the text is in the recovery
+    /// cache until it is.
+    fn save_to(&mut self, chosen: &Path) -> bool {
+        // Always Markdown: `Notes` and `Notes.txt` become `Notes.md`.
+        let path = document::markdown_path(chosen);
+        let job = self.doc.save_job_as(&path);
+        let stored = self.recovery.store(&self.doc.text, Some(&path));
+        self.report(stored);
+        self.saver.save(job, true);
+        self.remember_file();
+        self.announce_save = false;
+        self.set_status(format!("Saved as {}", self.doc.display_name()), false);
+        true
     }
 
     /// A moment after typing stops: saved files are written, drafts are
@@ -1024,7 +1188,11 @@ impl SamadhiApp {
             .last_edit
             .is_some_and(|t| t.elapsed() >= AUTOSAVE_DELAY)
         {
-            self.checkpoint();
+            self.checkpoint(false);
+        }
+        if self.save_retry.is_some_and(|t| Instant::now() >= t) {
+            self.save_retry = None;
+            self.checkpoint(false);
         }
     }
 
@@ -1032,7 +1200,7 @@ impl SamadhiApp {
     fn request(&mut self, ctx: &egui::Context, action: Pending) {
         if self.is_unsaved_draft() {
             // Make sure it is safe in the cache while the question is open.
-            self.checkpoint();
+            self.checkpoint(true);
             self.pending = Some(action);
         } else {
             self.perform(ctx, action);
@@ -1051,7 +1219,8 @@ impl SamadhiApp {
     /// Settles the document and closes. Anything that could not be written
     /// to its file is left in the recovery cache for next time.
     fn quit(&mut self, ctx: &egui::Context) {
-        self.checkpoint();
+        self.checkpoint(true);
+        self.finish_saving();
         self.persist_settings();
         self.allow_close = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1108,7 +1277,7 @@ impl SamadhiApp {
                 self.pending = None;
                 self.doc = Document::default();
                 self.new_text = true;
-                self.recovery.clear();
+                self.recovery.clear_for(None);
                 self.last_edit = None;
                 self.perform(ctx, action);
             }
@@ -1119,16 +1288,23 @@ impl SamadhiApp {
     // ----- per-frame input ----------------------------------------------------
 
     fn poll_background_work(&mut self, ctx: &egui::Context) {
+        self.collect_saves();
         if let Some(loading) = &self.loading
             && let Ok(result) = loading.rx.try_recv()
         {
             let Some(Loading {
-                path, requested, ..
+                path,
+                requested,
+                recovered,
+                ..
             }) = self.loading.take()
             else {
                 unreachable!("checked above");
             };
-            self.finish_loading(&path, result, requested);
+            match recovered {
+                Some(text) => self.finish_recovering(&path, result, text),
+                None => self.finish_loading(&path, result, requested),
+            }
         }
         if let Some(dialog) = &self.dialog {
             match dialog.rx.try_recv() {
@@ -1200,7 +1376,7 @@ impl SamadhiApp {
             self.request(ctx, Pending::New);
         }
         if pressed(shortcut(Modifiers::COMMAND, Key::M)) {
-            self.checkpoint();
+            self.checkpoint(true);
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
         if pressed(shortcut(Modifiers::COMMAND, Key::Equals))
@@ -1219,7 +1395,7 @@ impl SamadhiApp {
         }
         // The window manager (or a logout) asked to close. Secure the work
         // first; a draft then gets the usual question.
-        self.checkpoint();
+        self.checkpoint(true);
         if self.is_unsaved_draft() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Quit);
@@ -1379,16 +1555,18 @@ impl SamadhiApp {
                 (enabled, family.as_deref(), look.size, look.ink, look.accent),
                 wrap_width,
             );
-            if let Some((k, galley)) = cache.as_ref()
-                && *k == key
-            {
-                return galley.clone();
-            }
-            let mut job = markdown::layout(text.as_str(), &look, enabled, active.as_ref());
+            let mut job = match cache.as_ref() {
+                Some((k, job)) if *k == key => job.clone(),
+                _ => {
+                    let job = markdown::layout(text.as_str(), &look, enabled, active.as_ref());
+                    *cache = Some((key, job.clone()));
+                    job
+                }
+            };
             job.wrap.max_width = wrap_width;
-            let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
-            *cache = Some((key, galley.clone()));
-            galley
+            // egui's own cache makes this quick, and it is emptied whenever
+            // the font atlas is, so the glyphs are always current.
+            ui.ctx().fonts_mut(|f| f.layout_job(job))
         };
         let ink = look.ink;
         let squiggle = if self.stage.dark() {
@@ -1417,6 +1595,10 @@ impl SamadhiApp {
                             .desired_width(f32::INFINITY)
                             .min_size(inner.size())
                             .show(ui);
+                        #[cfg(test)]
+                        {
+                            self.last_galley = Some(output.galley.clone());
+                        }
                         if let Some(checker) = checker {
                             let text = self.doc.text.as_str();
                             let ranges = Self::misspellings(
@@ -1633,18 +1815,7 @@ impl SamadhiApp {
             ui.spacing_mut().item_spacing.x = 4.0;
             match section {
                 Section::Text => self.text_controls(ui, &ctx),
-                Section::Size => {
-                    let size = self.settings.font_size;
-                    if icon_button(ui, Icon::Smaller, "Smaller (Ctrl+-)", false).clicked() {
-                        self.set_font_size(size - FONT_STEP);
-                    }
-                    if icon_button(ui, Icon::DefaultSize, "Default size", false).clicked() {
-                        self.set_font_size(DEFAULT_FONT_SIZE);
-                    }
-                    if icon_button(ui, Icon::Larger, "Larger (Ctrl+=)", false).clicked() {
-                        self.set_font_size(size + FONT_STEP);
-                    }
-                }
+                Section::Size => self.size_controls(ui),
                 Section::Theme => {
                     self.ensure_thumbnails(&ctx);
                     ui.vertical(|ui| {
@@ -1791,6 +1962,39 @@ impl SamadhiApp {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Smaller and larger side by side, as a small and a large letter in
+    /// the writing face, then a quiet "Reset" beside them.
+    fn size_controls(&mut self, ui: &mut egui::Ui) {
+        let size = self.settings.font_size;
+        let typeface = fonts::typeface(self.settings.font_family.as_deref());
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if text_button(
+            ui,
+            "A",
+            fonts::preview_font(typeface, 13.0),
+            "Smaller (Ctrl+-)",
+        )
+        .clicked()
+        {
+            self.set_font_size(size - FONT_STEP);
+        }
+        if text_button(
+            ui,
+            "A",
+            fonts::preview_font(typeface, 20.0),
+            "Larger (Ctrl+=)",
+        )
+        .clicked()
+        {
+            self.set_font_size(size + FONT_STEP);
+        }
+        ui.add_space(14.0);
+        let reset = format!("Default size ({DEFAULT_FONT_SIZE:.0} pt)");
+        if text_button(ui, "Reset", egui::FontId::proportional(12.5), &reset).clicked() {
+            self.set_font_size(DEFAULT_FONT_SIZE);
         }
     }
 
@@ -2251,7 +2455,8 @@ impl eframe::App for SamadhiApp {
     }
 
     fn on_exit(&mut self) {
-        self.checkpoint();
+        self.checkpoint(true);
+        self.finish_saving();
         self.persist_settings();
     }
 }
@@ -2460,7 +2665,18 @@ mod ui_tests {
             messages: None,
             file_dialogs: false,
             watchdog: Watchdog::new(),
+            save_interval: Duration::ZERO,
         }
+    }
+
+    /// Waits for background saves to be written and taken in.
+    fn settle_saves(h: &mut Harness<'_, SamadhiApp>) {
+        assert!(
+            h.state().saver.flush(Duration::from_secs(10)),
+            "saves stuck"
+        );
+        h.state_mut().collect_saves();
+        h.run_steps(1);
     }
 
     /// Opens `path` as the app does, and waits for it to arrive.
@@ -2527,6 +2743,7 @@ mod ui_tests {
         h.run_steps(2);
         std::thread::sleep(AUTOSAVE_DELAY + Duration::from_millis(50));
         h.run_steps(2);
+        settle_saves(h);
     }
 
     #[test]
@@ -2615,6 +2832,55 @@ mod ui_tests {
         h
     }
 
+    /// The bug behind the long freezes: an rclone mount held a save for up
+    /// to a minute (a rename waiting on an upload), and saving ran on the
+    /// interface thread. Here the file stops answering for good: it is
+    /// swapped for a named pipe, which any read or write waits on forever.
+    /// Typing must stay smooth, the text must stay safe, and quitting must
+    /// still close the app promptly.
+    #[cfg(unix)]
+    #[test]
+    fn a_drive_that_never_answers_never_freezes_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("on-a-stuck-drive.md");
+        std::fs::write(&path, "Before the drive hung.").unwrap();
+        let mut h = open_file(dir.path(), &path);
+        std::fs::remove_file(&path).unwrap();
+        let made = std::process::Command::new("mkfifo").arg(&path).status();
+        assert!(made.is_ok_and(|s| s.success()), "mkfifo failed");
+
+        let input = h.get_by_role(egui::Role::MultilineTextInput);
+        input.focus();
+        for round in 0..4 {
+            h.event(egui::Event::Text(format!(" word{round}")));
+            h.step();
+            // Autosave and the change check both touch the stuck file.
+            h.state_mut().last_edit = Instant::now().checked_sub(AUTOSAVE_DELAY * 2);
+            h.state_mut().last_disk_check = Instant::now().checked_sub(DISK_CHECK * 2).unwrap();
+            for _ in 0..5 {
+                let start = Instant::now();
+                h.step();
+                assert!(
+                    start.elapsed() < Duration::from_millis(500),
+                    "a frame waited on the stuck drive"
+                );
+            }
+        }
+        assert!(h.state().doc.text.ends_with(" word3"));
+        let draft = Recovery::new(Some(dir.path().join("recovery")))
+            .load()
+            .expect("the text is safe in the recovery cache");
+        assert_eq!(draft.text, h.state().doc.text);
+        assert_eq!(draft.path.as_deref(), Some(path.as_path()));
+
+        // Quitting gives the stuck save a moment, then closes anyway.
+        let start = Instant::now();
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().allow_close);
+        assert!(start.elapsed() < QUIT_WAIT + Duration::from_secs(2));
+    }
+
     #[test]
     fn outside_changes_are_picked_up_by_the_background_check() {
         let dir = tempfile::tempdir().unwrap();
@@ -2653,6 +2919,7 @@ mod ui_tests {
         std::fs::write(&path, "rewritten on the Mac").unwrap();
         std::thread::sleep(AUTOSAVE_DELAY + Duration::from_millis(50));
         h.run_steps(2);
+        settle_saves(&mut h);
         // Ours is saved (typed where the cursor was) and theirs kept beside.
         let saved = std::fs::read_to_string(&path).unwrap();
         assert_eq!(saved, h.state().doc.text);
@@ -2850,6 +3117,90 @@ mod ui_tests {
             h.run_steps(2);
         }
         assert_eq!(h.state().doc.text, "second file");
+    }
+
+    #[test]
+    fn editing_an_omm_file_saves_it_as_markdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let omm = dir.path().join("Old draft.omm");
+        std::fs::write(&omm, "From OmmWriter.").unwrap();
+        let mut h = open_file(dir.path(), &omm);
+        assert_eq!(h.state().settings.last_file.as_deref(), Some(omm.as_path()));
+        h.get_by_role(egui::Role::MultilineTextInput).focus();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+        type_and_pause(&mut h, " Continued.");
+        let md = dir.path().join("Old draft.md");
+        assert_eq!(
+            std::fs::read_to_string(&md).unwrap(),
+            "From OmmWriter. Continued."
+        );
+        assert_eq!(std::fs::read_to_string(&omm).unwrap(), "From OmmWriter.");
+        let app = h.state();
+        assert_eq!(app.doc.path(), Some(md.as_path()));
+        assert_eq!(app.settings.last_file.as_deref(), Some(md.as_path()));
+        assert_eq!(app.settings.recent_files.first(), Some(&md));
+        assert!(!app.settings.recent_files.contains(&omm));
+    }
+
+    #[test]
+    fn save_as_always_ends_in_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        type_and_pause(&mut h, "Notes");
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+        h.run_steps(2);
+        answer_dialog(&mut h, Some(dir.path().join("Notes.txt")));
+        settle_saves(&mut h);
+        assert_eq!(
+            h.state().doc.path(),
+            Some(dir.path().join("Notes.md").as_path())
+        );
+        assert!(dir.path().join("Notes.md").is_file());
+        assert!(!dir.path().join("Notes.txt").exists());
+    }
+
+    /// The text glitch when switching themes: egui empties its font atlas
+    /// when it fills up (themes, fonts and sizes all add glyphs), and the
+    /// editor kept showing text laid out against the old atlas, blank or
+    /// garbled until a click. Here the atlas is filled until egui empties
+    /// it; the editor must then show egui's fresh layout.
+    #[test]
+    #[allow(clippy::redundant_closure_for_method_calls)] // the method path can't name the lifetime
+    fn the_editor_never_keeps_text_laid_out_for_an_old_font_atlas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("story.md");
+        std::fs::write(&path, "# A title\n\nSome **styled** text.").unwrap();
+        let mut h = open_file(dir.path(), &path);
+        h.run_steps(2);
+        let before = h.state().last_galley.clone().unwrap();
+
+        // Glyphs at many large sizes, until the atlas is over 80% full.
+        let glyphs = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        for size in (40..1000).step_by(8) {
+            h.ctx.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    glyphs.to_owned(),
+                    egui::FontId::proportional(size as f32),
+                    Color32::WHITE,
+                )
+            });
+            if h.ctx.fonts(|f| f.font_atlas_fill_ratio()) > 0.85 {
+                break;
+            }
+        }
+        assert!(
+            h.ctx.fonts(|f| f.font_atlas_fill_ratio()) > 0.8,
+            "atlas not filled"
+        );
+        h.run_steps(2); // egui empties the atlas as the next frame begins
+
+        let shown = h.state().last_galley.clone().unwrap();
+        let current = h.ctx.fonts_mut(|f| f.layout_job((*shown.job).clone()));
+        assert!(
+            !std::sync::Arc::ptr_eq(&before, &shown),
+            "kept the old layout"
+        );
+        assert!(std::sync::Arc::ptr_eq(&shown, &current));
     }
 
     #[test]
@@ -3078,6 +3429,11 @@ mod ui_tests {
             .iter()
             .position(|(_, k)| k.is_dark())
             .unwrap();
+        // Waiting for the scene can outlast the interface's idle timeout
+        // on a busy machine: bring it back, as moving the mouse would.
+        h.state_mut().ui_visible = true;
+        h.state_mut().last_pointer = Instant::now();
+        h.run_steps(2);
         h.get_by_role_and_label(egui::Role::Button, "Theme").hover();
         h.run_steps(2);
         h.get_by_role_and_label(egui::Role::Button, ThemeKind::ALL[dark_index].0)
@@ -3144,6 +3500,7 @@ mod ui_tests {
         }
         for (label, name) in [
             ("Font", "ui-2-font"),
+            ("Text size", "ui-2c-size"),
             ("Theme", "ui-3-theme"),
             ("Music", "ui-4-music"),
             ("Typing sounds", "ui-4b-typing"),
@@ -3339,6 +3696,7 @@ mod stress_tests {
             messages: None,
             file_dialogs: false,
             watchdog: Watchdog::new(),
+            save_interval: Duration::ZERO,
         };
         // Scripts the bundled fonts don't cover (Arabic, Japanese) are drawn
         // as boxes, as in the real app, rather than failing the test.
@@ -3577,10 +3935,11 @@ mod stress_tests {
         // settled, and a draft is in the recovery cache.
         let app = h.state_mut();
         app.loading = None;
-        let in_file = app.checkpoint();
+        app.checkpoint(true);
+        app.finish_saving();
         let text = app.doc.text.clone();
         match app.doc.path() {
-            Some(path) if in_file => {
+            Some(path) if !app.doc.is_dirty() => {
                 let saved = Document::open(path).unwrap().text;
                 assert_eq!(saved, text, "seed {seed}: the file differs from the page");
             }
