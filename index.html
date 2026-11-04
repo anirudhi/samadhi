@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Samādhi</title>
+<meta name="description" content="A quiet, full screen place to write. Free, for Windows, Mac and Linux.">
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/icon-256.png">
+<meta property="og:title" content="Samādhi">
+<meta property="og:description" content="A quiet, full screen place to write.">
+<meta property="og:image" content="assets/hero.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400&family=Literata:opsz,wght@7..72,300;7..72,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+
+  <header>
+    <img src="assets/icon-64.png" alt="" width="40" height="40">
+    <h1>Samādhi</h1>
+  </header>
+
+  <p>I wrote in OmmWriter for years, and when I moved to Linux I couldn't find anything that felt the same. So I made my own. It's a page in front of a slow moving landscape, some quiet music, the soft click of keys, and not much else. The controls fade away as soon as you start typing.</p>
+
+  <figure>
+    <img src="assets/hero.jpg" alt="Samādhi, full screen, with a page of writing over misty hills" width="1600" height="900">
+  </figure>
+
+  <section class="get" aria-label="Download">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-windows" aria-controls="windows" aria-selected="true">Windows</button>
+      <button type="button" role="tab" id="tab-mac" aria-controls="mac" aria-selected="false">Mac</button>
+      <button type="button" role="tab" id="tab-linux" aria-controls="linux" aria-selected="false">Linux</button>
+    </div>
+
+    <div class="panel" id="windows" role="tabpanel" aria-labelledby="tab-windows">
+      <a class="button" href="https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-x86_64-pc-windows-msvc.msi">Download for Windows</a>
+      <p>Or just <a href="https://github.com/anirudhi/samadhi/releases/latest/download/Samadhi.exe">the .exe</a> if you'd rather not install anything. Windows will probably warn you it doesn't recognise the app, since I haven't paid for a signing certificate yet. Click <em>More info</em>, then <em>Run anyway</em>.</p>
+    </div>
+
+    <div class="panel" id="mac" role="tabpanel" aria-labelledby="tab-mac">
+      <p>With Homebrew:</p>
+      <div class="cmd"><code>brew install anirudhi/tap/samadhi</code><button type="button" class="copy">Copy</button></div>
+      <p>Then type <code>samadhi</code> once, and it'll be in Launchpad from then on.</p>
+    </div>
+
+    <div class="panel" id="linux" role="tabpanel" aria-labelledby="tab-linux">
+      <p>In a terminal:</p>
+      <div class="cmd"><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.sh | sh</code><button type="button" class="copy">Copy</button></div>
+      <p>Run <code>samadhi</code> once and it adds itself to your app menu.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>Free and <a href="https://github.com/anirudhi/samadhi">open source</a>. Not affiliated with OmmWriter, just a fan.</p>
+  </footer>
+
+</main>
+
+<script>
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+  function show(id) {
+    tabs.forEach(function (tab) {
+      var on = tab.getAttribute("aria-controls") === id;
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      tab.tabIndex = on ? 0 : -1;
+      document.getElementById(tab.getAttribute("aria-controls")).hidden = !on;
+    });
+  }
+  tabs.forEach(function (tab, i) {
+    tab.addEventListener("click", function () { show(tab.getAttribute("aria-controls")); });
+    tab.addEventListener("keydown", function (e) {
+      var step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      var next = tabs[(i + step + tabs.length) % tabs.length];
+      next.focus();
+      show(next.getAttribute("aria-controls"));
+    });
+  });
+  // Start on the visitor's own system.
+  var ua = navigator.userAgent || "";
+  show(/Mac/i.test(ua) && !/iPhone|iPad/i.test(ua) ? "mac" : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? "linux" : "windows");
+
+  document.querySelectorAll(".copy").forEach(function (button) {
+    button.addEventListener("click", function () {
+      navigator.clipboard.writeText(button.parentNode.querySelector("code").textContent).then(function () {
+        button.textContent = "Copied";
+        setTimeout(function () { button.textContent = "Copy"; }, 1500);
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>
