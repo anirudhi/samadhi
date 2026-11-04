@@ -3,8 +3,14 @@
 All notable changes to Samādhi are recorded here. Each release's section
 becomes its notes on GitHub.
 
-## Unreleased
+## 0.3.0
 
+- **Windows:** Samādhi now runs on Windows 10 and 11. Download an installer
+  (.msi, with a Start menu shortcut) or a standalone `Samadhi.exe` from
+  the website, which also has Mac and Linux instructions. A second launch
+  hands over to the running window there too, and Google Drive for desktop
+  is found on its drive letter.
+- **A website:** [anirudhi.github.io/samadhi](https://anirudhi.github.io/samadhi/).
 - **Always Markdown:** every document is saved as `.md`. Other plain-text
   files still open. When you edit one (`.txt`, or an older document with
   another extension), its text goes to a `.md` beside it and the original

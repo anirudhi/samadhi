@@ -1,6 +1,6 @@
 [package]
 name = "samadhi"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Samādhi: a calm, distraction-free, full-screen writing app with ambient music and typing sounds"
@@ -8,7 +8,7 @@ license = "GPL-3.0-only"
 authors = ["Anirudh Iyer"]
 readme = "README.md"
 repository = "https://github.com/anirudhi/samadhi"
-homepage = "https://github.com/anirudhi/samadhi"
+homepage = "https://anirudhi.github.io/samadhi/"
 keywords = ["writing", "editor", "distraction-free", "markdown", "mindfulness"]
 categories = ["text-editors", "gui"]
 

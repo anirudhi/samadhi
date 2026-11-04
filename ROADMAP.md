@@ -78,7 +78,25 @@ the stopgap first.
 
 ---
 
-## 2. A website with downloads *(next)*
+## 2. A website with downloads *(done: live on GitHub Pages; domain next)*
+
+**Done in 0.3.0:** the site in `site/` is live at
+<https://anirudhi.github.io/samadhi/>. It has a Windows download (`.msi`
+and `Samadhi.exe`), Mac and Linux instructions with copy buttons, and
+highlights the visitor's system.
+
+- `.github/workflows/site.yml` republishes it to the `gh-pages` branch
+  whenever `site/` changes on `main`.
+- Its screenshots come from the real app:
+  `cargo test -- --ignored render_site_images`.
+- **Vercel** was the first choice, but this machine isn't signed in to
+  Vercel, so GitHub Pages was used. To move it: in Vercel, "Add New
+  Project", import `anirudhi/samadhi` and set the root directory to
+  `site` (no build step). Or run `npx vercel login` then
+  `npx vercel deploy --prod site` here. Then point the domain at Vercel.
+
+**Still to do:** the domain (below), the DMG link once section 1 is done,
+and an animated hero (a short loop of the interface fading out).
 
 **Goal:** one page that says what Samādhi is, shows it, and offers the
 right download for each visitor.
@@ -135,12 +153,37 @@ Publish an **AppImage** (a single download, no install) from the release
 workflow with `cargo-appimage` or `linuxdeploy`. Flathub is a further
 step.
 
-### Windows *(idea)*
+### Windows *(done in 0.3.0; signing planned)*
 
-The code has little that's Unix-only (the single-instance socket and the
-`/proc` checks), so a Windows build is realistic. It needs a
-named-pipe version of `instance.rs` and an MSI installer, which dist can
-make.
+Windows 10 and 11 are supported. What 0.3.0 added:
+
+- **CI:** runs on Windows.
+- **Releases:**
+  - an `.msi` from `wix/main.wxs`, with a Start menu shortcut and the
+    icon;
+  - a zip;
+  - a PowerShell installer;
+  - a plain `Samadhi.exe`, attached by `.github/workflows/windows-exe.yml`.
+- **The app itself:**
+  - the single-instance check uses a loopback TCP port with a random
+    token;
+  - Google Drive for desktop is found on its drive letter;
+  - `build.rs` embeds the icon in the `.exe`.
+
+**Next:** code-sign the `.exe` and `.msi`, so SmartScreen stops showing
+"Windows protected your PC". Options:
+
+- **Azure Trusted Signing:** about $10 a month, the simplest for
+  individuals. It needs identity validation in your name.
+- **An OV or EV certificate:** a few hundred dollars a year.
+
+Either way, a CI step would run `signtool` (or the Trusted Signing
+action) before the MSI is built.
+
+Also worth checking on real Windows machines:
+- high-DPI scaling;
+- the GPU fallback to OpenGL on older laptops;
+- the typing-sound latency of WASAPI.
 
 ---
 

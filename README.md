@@ -4,7 +4,8 @@
 
 *Samādhi* (Pali): concentration, one-pointed attention.
 
-A calm, distraction-free, full-screen writing app for Linux and macOS,
+A calm, distraction-free, full-screen writing app for Windows, macOS and
+Linux,
 heavily inspired by [OmmWriter](https://ommwriter.com). You get one page,
 a living landscape behind it, ambient music and soft typing sounds. The
 interface fades away the moment you start typing and comes back when you
@@ -115,6 +116,21 @@ markdown styling.
 
 ## Install
 
+Downloads and step-by-step instructions are on the website,
+**[anirudhi.github.io/samadhi](https://anirudhi.github.io/samadhi/)**.
+
+**Windows:** download the
+[installer (.msi)](https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-x86_64-pc-windows-msvc.msi),
+which adds Samādhi to the Start menu, or the standalone
+[Samadhi.exe](https://github.com/anirudhi/samadhi/releases/latest/download/Samadhi.exe),
+which needs no installing. Samādhi isn't code-signed yet, so Windows may
+say it protected your PC: click **More info**, then **Run anyway**. From
+PowerShell you can also run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.ps1 | iex"
+```
+
 **macOS (Homebrew):**
 
 ```sh
@@ -142,7 +158,9 @@ You can also download a build for your system from the
 ### Updating
 
 - **Homebrew:** `brew upgrade samadhi`
-- **Installer script:** run `samadhi-update`, or run the installer again.
+- **Installer script or PowerShell:** run `samadhi-update`, or run the
+  installer again.
+- **Windows installer or .exe:** download the new one from the website.
 
 ### Building from source
 

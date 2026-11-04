@@ -3440,6 +3440,83 @@ mod ui_tests {
         );
     }
 
+    /// Renders the screenshots for the website into `site/assets/`:
+    /// `cargo test -- --ignored render_site_images`.
+    #[test]
+    #[ignore = "needs a GPU; writes the website's screenshots"]
+    fn render_site_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("A quiet place.md");
+        std::fs::write(
+            &path,
+            "# A quiet place\n\nThe morning is still. Nothing asks for anything. The words come slowly, one after another, and there is room for each of them.\n\nWrite until the page is full, or until it isn't. Either is fine.\n\n> Attention is the beginning of devotion.",
+        )
+        .unwrap();
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("site/assets");
+        std::fs::create_dir_all(&out).unwrap();
+        let options = options(dir.path(), Some(path));
+        let mut h = Harness::builder()
+            .with_size(vec2(1600.0, 900.0))
+            .wgpu()
+            .build_eframe(move |cc| SamadhiApp::new(cc, options));
+        settle(&mut h);
+        let save = |h: &mut Harness<'_, SamadhiApp>, name: &str| {
+            let image = h.render().unwrap();
+            let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
+            let file = std::fs::File::create(out.join(format!("{name}.jpg"))).unwrap();
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, 84);
+            encoder.encode_image(&rgb).unwrap();
+        };
+        // Writing: the interface faded away.
+        let quiet = |h: &mut Harness<'_, SamadhiApp>| {
+            h.state_mut().ui_visible = false;
+            h.state_mut().last_pointer =
+                Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
+            for _ in 0..40 {
+                h.step();
+            }
+        };
+        for (theme, name) in [
+            ("Hazy Hills", "hero"),
+            ("Milky Way", "theme-milky-way"),
+            ("Dawn Mist", "theme-dawn-mist"),
+            ("Desert Haze", "theme-desert-haze"),
+            ("Forest Night", "theme-forest-night"),
+            ("Sea Mist", "theme-sea-mist"),
+        ] {
+            h.state_mut().settings.theme = Some(theme.to_owned());
+            let ctx = h.ctx.clone();
+            h.state_mut().restore_media(&ctx);
+            wait_for_scene(&mut h);
+            quiet(&mut h);
+            save(&mut h, name);
+        }
+        // The controls: the theme grid, then the timer counting down.
+        h.state_mut().settings.theme = Some("Hazy Hills".to_owned());
+        let ctx = h.ctx.clone();
+        h.state_mut().restore_media(&ctx);
+        wait_for_scene(&mut h);
+        h.hover_at(pos2(50.0, 50.0));
+        h.step();
+        h.hover_at(pos2(60.0, 60.0));
+        h.run_steps(5);
+        h.get_by_role_and_label(egui::Role::Button, "Theme").hover();
+        for _ in 0..600 {
+            h.step();
+            if h.state().thumbs.iter().all(Option::is_some) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        h.run_steps(10);
+        save(&mut h, "controls");
+        h.get_by_role_and_label(egui::Role::Button, "Timer").hover();
+        h.run_steps(3);
+        h.get_by_label("25 min").click();
+        h.run_steps(10);
+        save(&mut h, "timer");
+    }
+
     /// Renders the interface in several states to `target/previews/` for
     /// visual review: `cargo test -- --ignored render_previews`.
     #[test]
