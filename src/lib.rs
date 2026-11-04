@@ -15,7 +15,8 @@ pub mod fonts;
 pub mod frost;
 pub mod icons;
 pub mod instance;
-#[cfg(any(target_os = "macos", test))]
+// Built on macOS, and tested on every Unix (its tests compare Unix paths).
+#[cfg(any(target_os = "macos", all(test, unix)))]
 pub mod macos;
 pub mod markdown;
 pub mod page;
