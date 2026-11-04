@@ -3440,7 +3440,7 @@ mod ui_tests {
         );
     }
 
-    /// Renders the screenshots for the website into `site/assets/`:
+    /// Renders the website's screenshot into `site/assets/hero.jpg`:
     /// `cargo test -- --ignored render_site_images`.
     #[test]
     #[ignore = "needs a GPU; writes the website's screenshots"]
@@ -3476,45 +3476,13 @@ mod ui_tests {
                 h.step();
             }
         };
-        for (theme, name) in [
-            ("Hazy Hills", "hero"),
-            ("Milky Way", "theme-milky-way"),
-            ("Dawn Mist", "theme-dawn-mist"),
-            ("Desert Haze", "theme-desert-haze"),
-            ("Forest Night", "theme-forest-night"),
-            ("Sea Mist", "theme-sea-mist"),
-        ] {
-            h.state_mut().settings.theme = Some(theme.to_owned());
-            let ctx = h.ctx.clone();
-            h.state_mut().restore_media(&ctx);
-            wait_for_scene(&mut h);
-            quiet(&mut h);
-            save(&mut h, name);
-        }
-        // The controls: the theme grid, then the timer counting down.
+        // Writing on Hazy Hills, the interface faded away.
         h.state_mut().settings.theme = Some("Hazy Hills".to_owned());
         let ctx = h.ctx.clone();
         h.state_mut().restore_media(&ctx);
         wait_for_scene(&mut h);
-        h.hover_at(pos2(50.0, 50.0));
-        h.step();
-        h.hover_at(pos2(60.0, 60.0));
-        h.run_steps(5);
-        h.get_by_role_and_label(egui::Role::Button, "Theme").hover();
-        for _ in 0..600 {
-            h.step();
-            if h.state().thumbs.iter().all(Option::is_some) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        h.run_steps(10);
-        save(&mut h, "controls");
-        h.get_by_role_and_label(egui::Role::Button, "Timer").hover();
-        h.run_steps(3);
-        h.get_by_label("25 min").click();
-        h.run_steps(10);
-        save(&mut h, "timer");
+        quiet(&mut h);
+        save(&mut h, "hero");
     }
 
     /// Renders the interface in several states to `target/previews/` for

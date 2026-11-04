@@ -3,179 +3,96 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Samādhi — write in a quiet place</title>
-<meta name="description" content="A calm, distraction-free, full-screen writing app with living landscapes, ambient music and soft typing sounds. Free and open source for Windows, macOS and Linux.">
+<title>Samādhi</title>
+<meta name="description" content="A quiet, full screen place to write. Free, for Windows, Mac and Linux.">
 <link rel="icon" type="image/png" href="assets/favicon.png">
 <link rel="apple-touch-icon" href="assets/icon-256.png">
-<meta property="og:title" content="Samādhi — write in a quiet place">
-<meta property="og:description" content="A calm, full-screen writing app with living landscapes, ambient music and soft typing sounds.">
+<meta property="og:title" content="Samādhi">
+<meta property="og:description" content="A quiet, full screen place to write.">
 <meta property="og:image" content="assets/hero.jpg">
-<meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Literata:ital,opsz,wght@0,7..72,300;0,7..72,400;0,7..72,500;1,7..72,300&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400&family=Literata:opsz,wght@7..72,300;7..72,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<header class="top">
-  <a class="brand" href="#"><img src="assets/icon-64.png" alt="" width="28" height="28"><span>Samādhi</span></a>
-  <nav>
-    <a href="#download">Download</a>
-    <a href="#features">Features</a>
-    <a href="https://github.com/anirudhi/samadhi">Source</a>
-  </nav>
-</header>
-
 <main>
 
-<section class="hero">
-  <p class="eyebrow"><em>Samādhi</em> (Pali): concentration, one-pointed attention</p>
-  <h1>Write in a quiet place.</h1>
-  <p class="lede">One page, a living landscape behind it, ambient music and soft typing sounds. The interface fades away the moment you start writing and returns when you move the mouse.</p>
-  <div class="cta">
-    <a class="button primary" id="primary-download" href="#download">Download for free</a>
-    <span class="meta" id="version-line">Windows · macOS · Linux · free and open source</span>
-  </div>
-  <figure class="shot">
-    <img src="assets/hero.jpg" alt="Samādhi in full screen: a page of writing over misty hills" width="1600" height="900">
+  <header>
+    <img src="assets/icon-64.png" alt="" width="40" height="40">
+    <h1>Samādhi</h1>
+  </header>
+
+  <p>I wrote in OmmWriter for years, and when I moved to Linux I couldn't find anything that felt the same. So I made my own. It's a page in front of a slow moving landscape, some quiet music, the soft click of keys, and not much else. The controls fade away as soon as you start typing.</p>
+
+  <figure>
+    <img src="assets/hero.jpg" alt="Samādhi, full screen, with a page of writing over misty hills" width="1600" height="900">
   </figure>
-</section>
 
-<section id="download" class="download">
-  <h2>Download</h2>
-  <p class="sub">Free, with no account and no tracking. Your writing stays in plain Markdown files on your computer.</p>
-
-  <div class="platforms">
-
-    <article class="platform" data-os="windows">
-      <h3>Windows</h3>
-      <p class="hint">Windows 10 or 11, 64-bit.</p>
-      <a class="button primary" href="https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-x86_64-pc-windows-msvc.msi">Download installer (.msi)</a>
-      <a class="button" href="https://github.com/anirudhi/samadhi/releases/latest/download/Samadhi.exe">Download Samadhi.exe</a>
-      <ol>
-        <li><strong>Installer:</strong> run it, and Samādhi appears in the Start menu.</li>
-        <li><strong>Samadhi.exe:</strong> no installing; put it anywhere and double-click it.</li>
-        <li>Samādhi isn't signed yet, so Windows may say it <em>protected your PC</em>. Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
-      </ol>
-    </article>
-
-    <article class="platform" data-os="mac">
-      <h3>macOS</h3>
-      <p class="hint">macOS 11 or later, Apple silicon or Intel.</p>
-      <p class="step">With <a href="https://brew.sh">Homebrew</a>, in Terminal:</p>
-      <div class="cmd"><code>brew install anirudhi/tap/samadhi</code><button type="button" class="copy" aria-label="Copy command">Copy</button></div>
-      <p class="step">Without Homebrew, paste this into Terminal (in Applications → Utilities):</p>
-      <div class="cmd"><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.sh | sh</code><button type="button" class="copy" aria-label="Copy command">Copy</button></div>
-      <ol>
-        <li>Then type <code>samadhi</code> and press Return once.</li>
-        <li>From then on, Samādhi is in Launchpad and Spotlight like any other app, and you can keep it in the Dock.</li>
-      </ol>
-      <p class="soon">A one-click Mac download (.dmg) is on its way.</p>
-    </article>
-
-    <article class="platform" data-os="linux">
-      <h3>Linux</h3>
-      <p class="hint">x86-64 or ARM64, with a desktop (Wayland or X11).</p>
-      <p class="step">In a terminal:</p>
-      <div class="cmd"><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.sh | sh</code><button type="button" class="copy" aria-label="Copy command">Copy</button></div>
-      <ol>
-        <li>It installs into <code>~/.local/bin</code>; no root needed.</li>
-        <li>Run <code>samadhi</code> once, and it adds itself to your application menu.</li>
-        <li>Homebrew works too: <code>brew install anirudhi/tap/samadhi</code>.</li>
-      </ol>
-    </article>
-
-  </div>
-
-  <p class="other">Updating: run the installer again (or <code>samadhi-update</code>; <code>brew upgrade samadhi</code> with Homebrew). Every version and checksum is on <a href="https://github.com/anirudhi/samadhi/releases">GitHub Releases</a>.</p>
-</section>
-
-<section id="features" class="features">
-  <h2>Made for attention</h2>
-  <div class="grid">
-    <div><h3>Living landscapes</h3><p>Sixteen themes: misty photographs and painted scenes that drift with gentle parallax, falling snow, stars and fireflies.</p></div>
-    <div><h3>Sound to settle into</h3><p>Calm music, endless rain and ocean soundscapes, and nine soft typing sounds, from barely-there felt to a classic typewriter.</p></div>
-    <div><h3>Markdown, live</h3><p>Headings, emphasis, quotes and lists style themselves as you type. Files are plain <code>.md</code>, readable anywhere, forever.</p></div>
-    <div><h3>Never lose a word</h3><p>Saves itself as you pause, in the background. Unsaved work survives crashes and power cuts, and edits from another computer are never overwritten.</p></div>
-    <div><h3>A focus timer</h3><p>Five or twenty-five minutes with one click, or anything up to an hour. A quiet ring counts down under the page; a soft bowl chime ends it.</p></div>
-    <div><h3>Your files, your folders</h3><p>Writing lives in plain files. Point Samādhi at Google Drive and your pages follow you between computers.</p></div>
-  </div>
-</section>
-
-<section class="gallery">
-  <h2>Choose your landscape</h2>
-  <div class="strip">
-    <figure><img src="assets/theme-milky-way.jpg" alt="Milky Way theme" loading="lazy" width="1600" height="900"><figcaption>Milky Way</figcaption></figure>
-    <figure><img src="assets/theme-dawn-mist.jpg" alt="Dawn Mist theme" loading="lazy" width="1600" height="900"><figcaption>Dawn Mist</figcaption></figure>
-    <figure><img src="assets/theme-desert-haze.jpg" alt="Desert Haze theme" loading="lazy" width="1600" height="900"><figcaption>Desert Haze</figcaption></figure>
-    <figure><img src="assets/theme-forest-night.jpg" alt="Forest Night theme" loading="lazy" width="1600" height="900"><figcaption>Forest Night</figcaption></figure>
-    <figure><img src="assets/theme-sea-mist.jpg" alt="Sea Mist theme" loading="lazy" width="1600" height="900"><figcaption>Sea Mist</figcaption></figure>
-  </div>
-</section>
-
-<section class="controls">
-  <div class="pair">
-    <figure><img src="assets/controls.jpg" alt="The theme grid open beside the page" loading="lazy" width="1600" height="900"></figure>
-    <div class="copy-block">
-      <h2>Everything at hand, nothing in the way</h2>
-      <p>Move the mouse and a column of quiet icons appears beside the page: fonts, text size, themes, music, typing sounds, the timer and your documents. Start typing and it all fades away again.</p>
-      <p>Esc saves and closes. Ctrl+S names a new draft; after that, it saves itself.</p>
+  <section class="get" aria-label="Download">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-windows" aria-controls="windows" aria-selected="true">Windows</button>
+      <button type="button" role="tab" id="tab-mac" aria-controls="mac" aria-selected="false">Mac</button>
+      <button type="button" role="tab" id="tab-linux" aria-controls="linux" aria-selected="false">Linux</button>
     </div>
-  </div>
-</section>
 
-<section class="open">
-  <h2>Free and open source</h2>
-  <p>Samādhi is released under the GNU General Public License. Read the code, build it yourself, or help shape it on <a href="https://github.com/anirudhi/samadhi">GitHub</a>.</p>
-  <p class="fine">Samādhi is heavily inspired by <a href="https://ommwriter.com">OmmWriter</a>, whose calm approach to writing it follows closely. It is an independent project, not affiliated with or endorsed by OmmWriter or its makers.</p>
-</section>
+    <div class="panel" id="windows" role="tabpanel" aria-labelledby="tab-windows">
+      <a class="button" href="https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-x86_64-pc-windows-msvc.msi">Download for Windows</a>
+      <p>Or just <a href="https://github.com/anirudhi/samadhi/releases/latest/download/Samadhi.exe">the .exe</a> if you'd rather not install anything. Windows will probably warn you it doesn't recognise the app, since I haven't paid for a signing certificate yet. Click <em>More info</em>, then <em>Run anyway</em>.</p>
+    </div>
+
+    <div class="panel" id="mac" role="tabpanel" aria-labelledby="tab-mac">
+      <p>No proper Mac download yet, so for now it's one line in Terminal:</p>
+      <div class="cmd"><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.sh | sh</code><button type="button" class="copy">Copy</button></div>
+      <p>Then type <code>samadhi</code> once, and it'll be in Launchpad from then on. If you use Homebrew, <code>brew install anirudhi/tap/samadhi</code> works too.</p>
+    </div>
+
+    <div class="panel" id="linux" role="tabpanel" aria-labelledby="tab-linux">
+      <p>In a terminal:</p>
+      <div class="cmd"><code>curl --proto '=https' --tlsv1.2 -LsSf https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-installer.sh | sh</code><button type="button" class="copy">Copy</button></div>
+      <p>Run <code>samadhi</code> once and it adds itself to your app menu.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>Free and <a href="https://github.com/anirudhi/samadhi">open source</a>. Not affiliated with OmmWriter, just a fan.</p>
+  </footer>
 
 </main>
 
-<footer>
-  <p>Samādhi · © Anirudh Iyer and contributors · <a href="https://github.com/anirudhi/samadhi">Source</a> · <a href="https://github.com/anirudhi/samadhi/blob/main/NOTICE.md">Credits and licences</a></p>
-</footer>
-
 <script>
 (function () {
-  // Point the main button at the visitor's system, and lead with it.
-  var ua = navigator.userAgent || "";
-  var os = /Windows/i.test(ua) ? "windows" : /Mac/i.test(ua) ? "mac" : /Linux|X11/i.test(ua) ? "linux" : null;
-  if (os) {
-    var card = document.querySelector('.platform[data-os="' + os + '"]');
-    if (card) {
-      card.classList.add("yours");
-      card.parentNode.insertBefore(card, card.parentNode.firstChild);
-    }
-    var primary = document.getElementById("primary-download");
-    if (os === "windows") {
-      primary.textContent = "Download for Windows";
-      primary.href = "https://github.com/anirudhi/samadhi/releases/latest/download/samadhi-x86_64-pc-windows-msvc.msi";
-    } else {
-      primary.textContent = os === "mac" ? "Get it for Mac" : "Get it for Linux";
-    }
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+  function show(id) {
+    tabs.forEach(function (tab) {
+      var on = tab.getAttribute("aria-controls") === id;
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      tab.tabIndex = on ? 0 : -1;
+      document.getElementById(tab.getAttribute("aria-controls")).hidden = !on;
+    });
   }
-  // Copy buttons.
+  tabs.forEach(function (tab, i) {
+    tab.addEventListener("click", function () { show(tab.getAttribute("aria-controls")); });
+    tab.addEventListener("keydown", function (e) {
+      var step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      var next = tabs[(i + step + tabs.length) % tabs.length];
+      next.focus();
+      show(next.getAttribute("aria-controls"));
+    });
+  });
+  // Start on the visitor's own system.
+  var ua = navigator.userAgent || "";
+  show(/Mac/i.test(ua) && !/iPhone|iPad/i.test(ua) ? "mac" : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? "linux" : "windows");
+
   document.querySelectorAll(".copy").forEach(function (button) {
     button.addEventListener("click", function () {
-      var text = button.parentNode.querySelector("code").textContent;
-      navigator.clipboard.writeText(text).then(function () {
+      navigator.clipboard.writeText(button.parentNode.querySelector("code").textContent).then(function () {
         button.textContent = "Copied";
-        setTimeout(function () { button.textContent = "Copy"; }, 1600);
+        setTimeout(function () { button.textContent = "Copy"; }, 1500);
       });
     });
   });
-  // The latest version, when GitHub answers.
-  fetch("https://api.github.com/repos/anirudhi/samadhi/releases/latest")
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (release) {
-      if (release && release.tag_name) {
-        document.getElementById("version-line").textContent =
-          "Version " + release.tag_name.replace(/^v/, "") + " · Windows · macOS · Linux · free and open source";
-      }
-    })
-    .catch(function () {});
 })();
 </script>
 </body>

@@ -81,13 +81,19 @@ the stopgap first.
 ## 2. A website with downloads *(done: live on GitHub Pages; domain next)*
 
 **Done in 0.3.0:** the site in `site/` is live at
-<https://anirudhi.github.io/samadhi/>. It has a Windows download (`.msi`
-and `Samadhi.exe`), Mac and Linux instructions with copy buttons, and
-highlights the visitor's system.
+<https://anirudhi.github.io/samadhi/>. It's deliberately minimal, like
+the app:
+
+- a short note in your own voice and one screenshot;
+- a Windows / Mac / Linux toggle that starts on the visitor's system:
+  the `.msi` and `.exe` for Windows, one Terminal line for Mac and Linux.
+
+Keep it that way: essentials only, written as you write (first person,
+plain and conversational), not marketing copy.
 
 - `.github/workflows/site.yml` republishes it to the `gh-pages` branch
   whenever `site/` changes on `main`.
-- Its screenshots come from the real app:
+- Its screenshot comes from the real app:
   `cargo test -- --ignored render_site_images`.
 - **Vercel** was the first choice, but this machine isn't signed in to
   Vercel, so GitHub Pages was used. To move it: in Vercel, "Add New
