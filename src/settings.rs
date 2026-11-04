@@ -174,8 +174,9 @@ impl Settings {
 /// setup. It goes in a `Writing` folder when the Drive has one.
 ///
 /// Looks where Google Drive for desktop keeps it on macOS
-/// (`~/Library/CloudStorage/GoogleDrive-<account>/My Drive`), its older
-/// locations, and the usual places for a Drive mounted on Linux.
+/// (`~/Library/CloudStorage/GoogleDrive-<account>/My Drive`) and Windows
+/// (`G:\My Drive`, on whichever drive letter), its older locations, and the
+/// usual places for a Drive mounted on Linux.
 fn google_drive_folder(home: &Path) -> Option<PathBuf> {
     let mut roots: Vec<PathBuf> = fs::read_dir(home.join("Library/CloudStorage"))
         .into_iter()
@@ -190,6 +191,13 @@ fn google_drive_folder(home: &Path) -> Option<PathBuf> {
             .iter()
             .map(|p| home.join(p)),
     );
+    // Google Drive for desktop on Windows is a drive of its own, `G:` by
+    // default.
+    if cfg!(windows) {
+        roots.extend(
+            (b'D'..=b'Z').map(|letter| PathBuf::from(format!("{}:\\My Drive", char::from(letter)))),
+        );
+    }
     let root = roots.into_iter().find(|r| r.is_dir())?;
     let writing = root.join("Writing");
     // ASCII, unlike the app's name: macOS and Linux store accented file

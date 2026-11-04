@@ -341,3 +341,12 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
+  custom-windows-exe:
+    needs:
+      - plan
+      - announce
+    uses: ./.github/workflows/windows-exe.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit

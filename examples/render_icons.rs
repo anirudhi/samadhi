@@ -1,5 +1,5 @@
-//! Renders the app icon at every size desktops expect, from the 1024 px
-//! master `assets/icon/samadhi.png`.
+//! Renders the app icon at every size desktops expect, and the Windows
+//! `samadhi.ico`, from the 1024 px master `assets/icon/samadhi.png`.
 //!
 //! ```sh
 //! cargo run --release --example render_icons                  # from the master
@@ -51,5 +51,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         icon.save(dir.join("samadhi.png"))?;
         println!("wrote {size}x{size}");
     }
+
+    // The Windows icon, embedded in samadhi.exe by build.rs.
+    let frames = [16, 24, 32, 48, 64, 128, 256]
+        .into_iter()
+        .map(|size| {
+            let icon = image::imageops::resize(&master, size, size, FilterType::Lanczos3);
+            image::codecs::ico::IcoFrame::as_png(
+                icon.as_raw(),
+                size,
+                size,
+                image::ExtendedColorType::Rgba8,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let ico = std::fs::File::create(root.join("samadhi.ico"))?;
+    image::codecs::ico::IcoEncoder::new(ico).encode_images(&frames)?;
+    println!("wrote samadhi.ico");
     Ok(())
 }

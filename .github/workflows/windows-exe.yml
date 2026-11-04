@@ -1,0 +1,40 @@
+# Attaches the plain Windows program, Samadhi.exe, to each release, so the
+# website can offer a single download that runs without installing. dist
+# calls this after the release is announced (see `post-announce-jobs` in
+# dist-workspace.toml).
+name: Windows exe
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  attach-exe:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Find the release
+        id: release
+        run: |
+          tag=$(echo '${{ inputs.plan }}' | jq -r '.announcement_tag')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Take samadhi.exe out of the Windows zip
+        run: |
+          gh release download "${{ steps.release.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern 'samadhi-x86_64-pc-windows-msvc.zip'
+          unzip -j samadhi-x86_64-pc-windows-msvc.zip '*samadhi.exe'
+          mv samadhi.exe Samadhi.exe
+          sha256sum Samadhi.exe > Samadhi.exe.sha256
+      - name: Attach it to the release
+        run: |
+          gh release upload "${{ steps.release.outputs.tag }}" \
+            --repo "${{ github.repository }}" --clobber \
+            Samadhi.exe Samadhi.exe.sha256

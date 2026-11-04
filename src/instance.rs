@@ -1,12 +1,14 @@
-//! One running copy. The first launch listens on a local socket; a later
+//! One running copy. The first launch listens for later ones; a later
 //! launch (clicking the icon again, or opening a file from the file
 //! manager) hands its request to the running app, which comes to the
 //! front, and then exits.
+//!
+//! On Linux and macOS the two talk over a per-user Unix socket. On Windows
+//! the running copy listens on a loopback TCP port, written with a random
+//! token to a small file in the user's temporary folder; a later launch
+//! must present the token, so only Samādhi itself can hand over requests.
 
-use std::ffi::OsStr;
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -26,7 +28,7 @@ impl Message {
     fn encode(&self) -> Vec<u8> {
         match self {
             Self::Show => SHOW.to_vec(),
-            Self::Open(path) => [OPEN, path.as_os_str().as_bytes()].concat(),
+            Self::Open(path) => [OPEN, &path_bytes(path)].concat(),
         }
     }
 
@@ -34,9 +36,30 @@ impl Message {
         if bytes == SHOW {
             return Some(Self::Show);
         }
-        let path = bytes.strip_prefix(OPEN)?;
-        Some(Self::Open(PathBuf::from(OsStr::from_bytes(path))))
+        bytes.strip_prefix(OPEN).map(|p| Self::Open(bytes_path(p)))
     }
+}
+
+#[cfg(unix)]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(unix)]
+fn bytes_path(bytes: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt as _;
+    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+}
+
+#[cfg(not(unix))]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
+#[cfg(not(unix))]
+fn bytes_path(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 /// The outcome of starting up.
@@ -48,14 +71,14 @@ pub enum Claim {
     HandedOver,
 }
 
-/// The running copy's end of the socket.
+/// The running copy's end of the connection.
 #[derive(Debug)]
 pub struct Instance {
-    listener: UnixListener,
+    listener: transport::Listener,
     guard: Guard,
 }
 
-/// Removes the socket when the app exits.
+/// Removes the socket (or port file) when the app exits.
 #[derive(Debug)]
 pub struct Guard(PathBuf);
 
@@ -65,8 +88,8 @@ impl Drop for Guard {
     }
 }
 
-/// Where the socket lives: the per-user runtime folder on Linux, the
-/// per-user temporary folder on macOS.
+/// Where the socket (or port file) lives: the per-user runtime folder on
+/// Linux, the per-user temporary folder elsewhere.
 pub fn default_socket() -> PathBuf {
     let dir = crate::project_dirs()
         .and_then(|d| d.runtime_dir().map(Path::to_path_buf))
@@ -79,9 +102,9 @@ pub fn claim(socket: &Path, message: &Message) -> io::Result<Claim> {
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // A couple of tries: a socket left by a crash is removed and retried.
+    // A couple of tries: one left behind by a crash is removed and retried.
     for _ in 0..3 {
-        match UnixListener::bind(socket) {
+        match transport::bind(socket) {
             Ok(listener) => {
                 return Ok(Claim::First(Instance {
                     listener,
@@ -89,11 +112,11 @@ pub fn claim(socket: &Path, message: &Message) -> io::Result<Claim> {
                 }));
             }
             Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-                if let Ok(mut stream) = UnixStream::connect(socket) {
+                if let Ok(mut stream) = transport::connect(socket) {
                     stream.write_all(&message.encode())?;
                     return Ok(Claim::HandedOver);
                 }
-                // Nobody is listening: a stale socket from a crash.
+                // Nobody is listening: left behind by a crash.
                 let _ = std::fs::remove_file(socket);
             }
             Err(err) => return Err(err),
@@ -111,11 +134,12 @@ impl Instance {
         std::thread::Builder::new()
             .name("single-instance".into())
             .spawn(move || {
-                for mut stream in listener.incoming().flatten() {
+                for mut stream in transport::incoming(&listener) {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let mut bytes = Vec::new();
                     if stream.read_to_end(&mut bytes).is_ok()
-                        && let Some(message) = Message::decode(&bytes)
+                        && let Some(message) =
+                            transport::accept(&listener, &bytes).and_then(Message::decode)
                     {
                         on_message(message);
                     }
@@ -123,6 +147,108 @@ impl Instance {
             })
             .ok();
         guard
+    }
+}
+
+#[cfg(unix)]
+mod transport {
+    use std::io;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::Path;
+
+    pub type Listener = UnixListener;
+
+    /// Fails with `AddrInUse` if the socket exists.
+    pub fn bind(path: &Path) -> io::Result<Listener> {
+        UnixListener::bind(path)
+    }
+
+    pub fn connect(path: &Path) -> io::Result<UnixStream> {
+        UnixStream::connect(path)
+    }
+
+    pub fn incoming(listener: &Listener) -> impl Iterator<Item = UnixStream> + '_ {
+        listener.incoming().flatten()
+    }
+
+    /// The request in what was received (only this user can connect).
+    #[allow(clippy::unnecessary_wraps)] // same shape as the Windows version
+    pub fn accept<'a>(_: &Listener, bytes: &'a [u8]) -> Option<&'a [u8]> {
+        Some(bytes)
+    }
+}
+
+#[cfg(not(unix))]
+mod transport {
+    use std::fs;
+    use std::hash::{BuildHasher as _, Hasher as _};
+    use std::io::{self, Write as _};
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
+    use std::path::Path;
+
+    #[derive(Debug)]
+    pub struct Listener {
+        inner: TcpListener,
+        token: String,
+    }
+
+    /// A fresh random token (std's hasher keys are random per process).
+    fn token() -> String {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        hasher.write_u32(std::process::id());
+        format!("{:016x}", hasher.finish())
+    }
+
+    /// Listens on a loopback port and records it, with a token, at `path`.
+    /// Fails with `AddrInUse` if the file exists.
+    pub fn bind(path: &Path) -> io::Result<Listener> {
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(io::ErrorKind::AddrInUse.into());
+            }
+            Err(err) => return Err(err),
+        };
+        let inner = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let token = token();
+        writeln!(file, "{} {token}", inner.local_addr()?.port())?;
+        Ok(Listener { inner, token })
+    }
+
+    /// Connects to the port recorded at `path`, presenting its token.
+    pub fn connect(path: &Path) -> io::Result<TcpStream> {
+        let record = fs::read_to_string(path)?;
+        let mut parts = record.split_whitespace();
+        let port: u16 = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or_else(|| io::Error::other("bad port file"))?;
+        let token = parts
+            .next()
+            .ok_or_else(|| io::Error::other("bad port file"))?;
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))?;
+        writeln!(stream, "{token}")?;
+        Ok(stream)
+    }
+
+    pub fn incoming(listener: &Listener) -> impl Iterator<Item = TcpStream> + '_ {
+        listener.inner.incoming().flatten()
+    }
+
+    /// The request in what was received, if it carries the right token.
+    pub fn accept<'a>(listener: &Listener, bytes: &'a [u8]) -> Option<&'a [u8]> {
+        let newline = bytes.iter().position(|&b| b == b'\n')?;
+        let (token, rest) = bytes.split_at(newline);
+        (token == listener.token.as_bytes()).then(|| &rest[1..])
     }
 }
 
@@ -141,7 +267,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let guard = first.serve(move |m| tx.send(m).unwrap());
 
-        let file = PathBuf::from("/notes/a thought.md");
+        let file = dir.path().join("a thought.md");
         assert!(matches!(
             claim(&socket, &Message::Open(file.clone())).unwrap(),
             Claim::HandedOver
@@ -163,16 +289,30 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_left_by_a_crash_is_reclaimed() {
+    fn one_left_behind_by_a_crash_is_reclaimed() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("app.sock");
-        // Bound and then abandoned without cleanup, as after a crash.
-        let crashed = UnixListener::bind(&socket).unwrap();
-        drop(crashed);
+        // Claimed and then abandoned without cleanup, as after a crash.
+        let Claim::First(crashed) = claim(&socket, &Message::Show).unwrap() else {
+            panic!("nothing else is running");
+        };
+        std::mem::forget(crashed.guard);
+        drop(crashed.listener);
         assert!(socket.exists());
         assert!(matches!(
             claim(&socket, &Message::Show).unwrap(),
             Claim::First(_)
         ));
+    }
+
+    #[test]
+    fn messages_survive_encoding() {
+        for message in [
+            Message::Show,
+            Message::Open(PathBuf::from("notes/Ünïcödé file.md")),
+        ] {
+            assert_eq!(Message::decode(&message.encode()), Some(message));
+        }
+        assert_eq!(Message::decode(b"nonsense"), None);
     }
 }

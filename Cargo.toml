@@ -12,6 +12,12 @@ homepage = "https://github.com/anirudhi/samadhi"
 keywords = ["writing", "editor", "distraction-free", "markdown", "mindfulness"]
 categories = ["text-editors", "gui"]
 
+[package.metadata.wix]
+upgrade-guid = "6A3545DD-ED65-4A9C-8D28-2F99627A568D"
+path-guid = "0F5C642E-A631-4DA9-AA73-1BF4D43F799E"
+license = false
+eula = false
+
 [dependencies]
 anyhow = "1.0.104"
 directories = "6.0.0"
@@ -29,6 +35,7 @@ env_logger = "0.11.11"
 image = { version = "0.25.10", default-features = false, features = [
     "bmp",
     "gif",
+    "ico",
     "jpeg",
     "png",
     "pnm",
@@ -92,3 +99,6 @@ opt-level = 2
 [dev-dependencies]
 egui_kittest = { version = "0.37.0", features = ["eframe", "wgpu", "snapshot"] }
 proptest = "1"
+
+[build-dependencies]
+winresource = "0.1"

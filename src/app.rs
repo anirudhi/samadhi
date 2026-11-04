@@ -196,7 +196,6 @@ pub struct Options {
     pub recovery_dir: Option<PathBuf>,
     pub audio: bool,
     /// Requests from later launches of the app (see [`crate::instance`]).
-    #[cfg(unix)]
     pub messages: Option<mpsc::Receiver<crate::instance::Message>>,
     /// Show real file dialogs. Tests turn this off and answer requests
     /// themselves.
@@ -216,7 +215,6 @@ impl Default for Options {
             documents_dir: None,
             recovery_dir: None,
             audio: true,
-            #[cfg(unix)]
             messages: None,
             file_dialogs: true,
             watchdog: Watchdog::new(),
@@ -260,7 +258,6 @@ pub struct SamadhiApp {
     dialog: Option<Dialog>,
     file_dialogs: bool,
     watchdog: Watchdog,
-    #[cfg(unix)]
     messages: Option<mpsc::Receiver<crate::instance::Message>>,
     timer: Timer,
 
@@ -393,7 +390,6 @@ impl SamadhiApp {
             dialog: None,
             file_dialogs: options.file_dialogs,
             watchdog: options.watchdog.clone(),
-            #[cfg(unix)]
             messages: options.messages,
             timer,
             audio,
@@ -817,7 +813,6 @@ impl SamadhiApp {
 
     /// Requests from later launches: come to the front, and open the file
     /// they were given (asking about an unsaved draft first).
-    #[cfg(unix)]
     fn handle_messages(&mut self, ctx: &egui::Context) {
         use crate::instance::Message;
         let Some(rx) = &self.messages else {
@@ -2318,7 +2313,6 @@ impl eframe::App for SamadhiApp {
         watchdog.begin_frame();
         self.poll_background_work(&ctx);
         watchdog.enter(Phase::Input);
-        #[cfg(unix)]
         self.handle_messages(&ctx);
         self.handle_shortcuts(&ctx);
         self.handle_close_request(&ctx);
@@ -2661,7 +2655,6 @@ mod ui_tests {
             documents_dir: Some(dir.join("docs")),
             recovery_dir: Some(dir.join("recovery")),
             audio: false,
-            #[cfg(unix)]
             messages: None,
             file_dialogs: false,
             watchdog: Watchdog::new(),
@@ -2931,7 +2924,6 @@ mod ui_tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn files_from_a_second_launch_open_here_after_asking_about_a_draft() {
         use crate::instance::Message;
@@ -3692,7 +3684,6 @@ mod stress_tests {
             documents_dir: Some(dir.join("docs")),
             recovery_dir: Some(dir.join("recovery")),
             audio: false,
-            #[cfg(unix)]
             messages: None,
             file_dialogs: false,
             watchdog: Watchdog::new(),

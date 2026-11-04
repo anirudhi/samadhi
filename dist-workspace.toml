@@ -3,22 +3,29 @@ members = ["cargo:."]
 
 # Release settings for `dist` (https://github.com/axodotdev/cargo-dist).
 # Pushing a tag like `v0.2.0` builds the app for every target below and
-# publishes a GitHub Release with installers and a Homebrew formula.
+# publishes a GitHub Release with installers (shell, PowerShell and a
+# Windows .msi) and a Homebrew formula.
 [dist]
 cargo-dist-version = "0.33.0"
 ci = "github"
-installers = ["shell", "homebrew"]
+installers = ["shell", "powershell", "homebrew", "msi"]
 tap = "anirudhi/homebrew-tap"
 publish-jobs = ["homebrew"]
+# Attach the plain Samadhi.exe too (.github/workflows/windows-exe.yml).
+post-announce-jobs = ["./windows-exe"]
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
 ]
 install-path = "~/.local/bin"
 install-updater = true
 formula = "samadhi"
+# wix/main.wxs is customised (Start menu shortcut, icon, product name):
+# keep dist from regenerating it.
+allow-dirty = ["msi"]
 # Ship the licence notices with every download.
 include = ["NOTICE.md"]
 

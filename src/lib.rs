@@ -14,7 +14,6 @@ pub mod document;
 pub mod fonts;
 pub mod frost;
 pub mod icons;
-#[cfg(unix)]
 pub mod instance;
 #[cfg(any(target_os = "macos", test))]
 pub mod macos;
