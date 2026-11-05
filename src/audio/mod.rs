@@ -94,6 +94,8 @@ pub struct AudioEngine {
     music_volume: f32,
     click_volume: f32,
     music_muted: bool,
+    /// The music only plays while the window is in front.
+    music_focused: bool,
     click_muted: bool,
     /// Cheap LCG used to vary each click slightly so fast typing sounds
     /// natural rather than machine-gun-like.
@@ -144,6 +146,7 @@ impl AudioEngine {
             music_volume: 1.0,
             click_volume: 1.0,
             music_muted: false,
+            music_focused: true,
             click_muted: false,
             jitter: 0x2545_F491,
         }
@@ -178,21 +181,34 @@ impl AudioEngine {
             }
         }
         player.set_volume(self.music_volume);
-        if self.music_muted {
-            player.pause();
-        }
         self.music = Some(player);
+        self.update_music();
         Ok(())
     }
 
     /// Muting pauses the track, so unmuting resumes where it left off.
     pub fn set_music_muted(&mut self, muted: bool) {
         self.music_muted = muted;
+        self.update_music();
+    }
+
+    /// Pauses the music while the window is in the background, and picks
+    /// it up where it left off on returning.
+    pub fn set_music_focused(&mut self, focused: bool) {
+        self.music_focused = focused;
+        self.update_music();
+    }
+
+    pub fn music_playing(&self) -> bool {
+        !self.music_muted && self.music_focused
+    }
+
+    fn update_music(&self) {
         if let Some(player) = &self.music {
-            if muted {
-                player.pause();
-            } else {
+            if self.music_playing() {
                 player.play();
+            } else {
+                player.pause();
             }
         }
     }
@@ -344,7 +360,11 @@ mod tests {
         audio.play_click();
         audio.play_chime();
         audio.set_music_muted(false);
-        assert!(!audio.music_muted);
+        assert!(audio.music_playing());
+        audio.set_music_focused(false);
+        assert!(!audio.music_playing(), "the music waits while the window is behind");
+        audio.set_music_focused(true);
+        assert!(audio.music_playing());
         assert!(audio.click.is_some(), "playing a click keeps it selected");
     }
 

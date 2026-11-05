@@ -257,6 +257,8 @@ pub struct SamadhiApp {
     dialog_request: Option<DialogKind>,
     dialog: Option<Dialog>,
     file_dialogs: bool,
+    /// Whether the window is in front (the music only plays then).
+    focused: bool,
     watchdog: Watchdog,
     messages: Option<mpsc::Receiver<crate::instance::Message>>,
     timer: Timer,
@@ -389,6 +391,7 @@ impl SamadhiApp {
             dialog_request: None,
             dialog: None,
             file_dialogs: options.file_dialogs,
+            focused: true,
             watchdog: options.watchdog.clone(),
             messages: options.messages,
             timer,
@@ -534,6 +537,16 @@ impl SamadhiApp {
         self.settings.music = Some(entry.name.clone());
         let result = self.audio.set_music(&entry.source);
         self.report(result);
+    }
+
+    /// Plays the music only while the window is in front.
+    fn follow_focus(&mut self, ctx: &egui::Context) {
+        // Unknown (some window systems never say) counts as in front.
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        if focused != self.focused {
+            self.focused = focused;
+            self.audio.set_music_focused(focused);
+        }
     }
 
     fn select_music(&mut self, index: usize) {
@@ -754,12 +767,18 @@ impl SamadhiApp {
         self.load_in_background(ctx, path, true);
     }
 
-    /// Asks for a file dialog; it opens at the end of this frame. Only one
-    /// is open at a time.
+    /// Asks for a file dialog; it opens at the end of this frame.
+    ///
+    /// Asking again while one is still open gives up on the old one: being
+    /// asked means the user is back in our window, and some file choosers
+    /// (COSMIC's, for one) can close without ever answering, which would
+    /// otherwise leave the button dead until a restart. The abandoned
+    /// dialog's thread stays blocked, and anything it answers is ignored.
     fn ask(&mut self, kind: DialogKind) {
-        if self.dialog.is_none() {
-            self.dialog_request = Some(kind);
+        if let Some(old) = self.dialog.take() {
+            log::warn!("the {:?} file dialog never answered; opening a new one", old.kind);
         }
+        self.dialog_request = Some(kind);
     }
 
     /// Opens the requested dialog on top of the app's window, waiting for
@@ -2402,6 +2421,7 @@ impl eframe::App for SamadhiApp {
             self.menu_area = None;
         }
         self.word_count(&ctx, page, fade);
+        self.follow_focus(&ctx);
         self.tick_timer(&ctx);
         self.timer_badge(&ctx, page, fade);
         ctx.set_cursor_icon(if self.ui_visible {
@@ -3047,14 +3067,58 @@ mod ui_tests {
             kind: DialogKind::Open,
             rx,
         });
-        // While it is open, no second dialog is asked for.
-        h.key_press_modifiers(Modifiers::COMMAND, Key::O);
-        h.run_steps(2);
-        assert_eq!(h.state().dialog_request, None);
-
         drop(tx);
         h.run_steps(2);
         assert!(h.state().dialog.is_none());
+    }
+
+    #[test]
+    fn the_music_only_plays_while_the_window_is_in_front() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        assert!(h.state().audio.music_playing());
+
+        let set_focus = |h: &mut Harness<'_, SamadhiApp>, focused: bool| {
+            h.input_mut()
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .focused = Some(focused);
+            h.run_steps(2);
+        };
+        set_focus(&mut h, false);
+        assert!(!h.state().audio.music_playing());
+        set_focus(&mut h, true);
+        assert!(h.state().audio.music_playing());
+
+        // Muted stays muted whatever the focus does.
+        h.state_mut().audio.set_music_muted(true);
+        set_focus(&mut h, false);
+        set_focus(&mut h, true);
+        assert!(!h.state().audio.music_playing());
+    }
+
+    #[test]
+    fn a_dialog_that_never_answers_does_not_block_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Second try.md");
+        std::fs::write(&path, "picked the second time").unwrap();
+        let mut h = harness(dir.path());
+        // The first dialog closed without answering: its sender lives on.
+        let (tx, rx) = mpsc::channel();
+        h.state_mut().dialog = Some(Dialog {
+            kind: DialogKind::Open,
+            rx,
+        });
+
+        h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+        h.run_steps(2);
+        assert!(h.state().dialog.is_none(), "the silent dialog is given up on");
+        answer_dialog(&mut h, Some(path));
+        assert_eq!(h.state().doc.text, "picked the second time");
+
+        // A late answer from the old one goes nowhere.
+        assert!(tx.send(None).is_err());
     }
 
     #[test]

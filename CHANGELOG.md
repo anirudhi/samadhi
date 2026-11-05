@@ -20,6 +20,13 @@ becomes its notes on GitHub.
 - **Text size controls:** smaller and larger now sit side by side, as a
   small and a large letter A in your writing font, with a quiet "Reset"
   beside them.
+- **Music only while you're here:** the music pauses when Samādhi's
+  window goes to the background and picks up where it left off when you
+  come back.
+- **Fixed:** the Open button could stop working after the first use. On
+  some desktops (COSMIC, for one) the file chooser can close without
+  telling the app, which then waited for it forever. Clicking Open again
+  now gives up on the silent dialog and opens a fresh one.
 - **Fixed:** text could vanish or turn into garbled glyphs for a moment
   after switching themes, until you clicked. egui empties its font atlas
   when it fills up, and the editor kept showing text drawn against the
